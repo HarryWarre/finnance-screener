@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Activity } from 'lucide-react';
+import { Activity, Star } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import { fetchChartData, fetchCot, fetchEnso, fetchWasde } from '../lib/api';
 import styles from '../App.module.css';
@@ -13,6 +13,9 @@ const AGRI: AgriInstrument[] = [
   { key: 'wheat', name: 'Wheat', yahooSymbol: 'ZW=F' },
   { key: 'oj', name: 'Orange Juice', yahooSymbol: 'OJ=F' },
 ];
+
+const SORT_KEYS = ['confidence', 'seasonal', 'cot', 'vol', '1m', 'name'] as const;
+type SortKey = (typeof SORT_KEYS)[number];
 
 function pct(a: number, b: number) {
   if (!Number.isFinite(a) || !Number.isFinite(b) || b === 0) return 0;
@@ -156,15 +159,50 @@ type Row = {
   confidence: number;
 };
 
+type OverviewSnapshot = {
+  savedAt: number;
+  sortKey: SortKey;
+  filters: { onlySeasonalStrong: boolean; onlyCrowded: boolean; hideHighVol: boolean };
+  enso: { state: string; oni: number } | null;
+  rows: Array<{
+    commodity: string;
+    symbol: string;
+    last: number;
+    pct1w: number;
+    pct1m: number;
+    pct3m: number;
+    vol20: number | null;
+    seasonalMed20d: number | null;
+    seasonalWin20d: number | null;
+    confidence: number;
+    rec: string;
+    cotZ: number | null;
+    stocksToUse: number | null;
+  }>;
+};
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
 export default function AgriDashboard({ isActive }: { isActive: boolean }) {
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [selected, setSelected] = useState<Row | null>(null);
   const [enso, setEnso] = useState<{ state: string; oni: number } | null>(null);
-  const [sortKey, setSortKey] = useState<'name' | 'confidence' | 'seasonal' | 'cot' | 'vol' | '1m'>('confidence');
+  const [sortKey, setSortKey] = useState<SortKey>('confidence');
   const [onlySeasonalStrong, setOnlySeasonalStrong] = useState(false);
   const [onlyCrowded, setOnlyCrowded] = useState(false);
   const [hideHighVol, setHideHighVol] = useState(false);
+  const [watchOnly, setWatchOnly] = useState(false);
+  const [watch, setWatch] = useState<Set<string>>(() => new Set());
+  const [snapshotCount, setSnapshotCount] = useState<number>(0);
+  const [lastSnapshotAt, setLastSnapshotAt] = useState<number | null>(null);
+  const [snapshots, setSnapshots] = useState<OverviewSnapshot[]>([]);
+  const [activeSnapshot, setActiveSnapshot] = useState<OverviewSnapshot | null>(null);
+  const [customSymbol, setCustomSymbol] = useState('');
+  const [customLoading, setCustomLoading] = useState(false);
+  const [customError, setCustomError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isActive) return;
@@ -302,8 +340,56 @@ export default function AgriDashboard({ isActive }: { isActive: boolean }) {
     };
   }, [isActive]);
 
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('agri_overview_snapshots');
+      if (!raw) return;
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      const list = parsed
+        .filter((v): v is OverviewSnapshot => {
+          if (!isRecord(v)) return false;
+          return typeof v.savedAt === 'number' && isRecord(v.filters) && Array.isArray(v.rows);
+        })
+        .slice(-20);
+      setSnapshots(list);
+      setSnapshotCount(list.length);
+      const last = list.at(-1);
+      if (last) setLastSnapshotAt(last.savedAt);
+    } catch {
+      // ignore
+    }
+  }, [isActive]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('agri_watchlist');
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      setWatch(new Set(parsed.filter((v) => typeof v === 'string')));
+    } catch {
+      // ignore
+    }
+  }, [isActive]);
+
+  const toggleWatch = (instrumentKey: string) => {
+    setWatch((prev) => {
+      const next = new Set(prev);
+      if (next.has(instrumentKey)) next.delete(instrumentKey);
+      else next.add(instrumentKey);
+      try {
+        localStorage.setItem('agri_watchlist', JSON.stringify([...next]));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+
   const filtered = useMemo(() => {
     return rows.filter((r) => {
+      if (watchOnly && !watch.has(r.instrument.key)) return false;
       if (onlySeasonalStrong) {
         const med = r.seasonalMed20d;
         const win = r.seasonalWin20d;
@@ -321,7 +407,7 @@ export default function AgriDashboard({ isActive }: { isActive: boolean }) {
       }
       return true;
     });
-  }, [rows, onlySeasonalStrong, onlyCrowded, hideHighVol]);
+  }, [rows, watchOnly, watch, onlySeasonalStrong, onlyCrowded, hideHighVol]);
 
   const sorted = useMemo(() => {
     const list = [...filtered];
@@ -338,6 +424,228 @@ export default function AgriDashboard({ isActive }: { isActive: boolean }) {
   }, [filtered, sortKey]);
 
   const colorPct = (v: number) => (v >= 0 ? '#10b981' : '#ef4444');
+
+  const openCustomSymbol = async () => {
+    const symbol = customSymbol.trim().toUpperCase();
+    if (!symbol) return;
+    setCustomError(null);
+    setCustomLoading(true);
+    try {
+      const chart = await fetchChartData(symbol, '1d', '5y');
+      if (!chart || chart.close.length < 120) {
+        setCustomError('Symbol không hợp lệ hoặc không đủ dữ liệu (Yahoo).');
+        return;
+      }
+      const close = chart.close;
+      const timestamp = chart.timestamp;
+      const last = close.at(-1) ?? 0;
+      const w = close.length > 5 ? close.at(-6) ?? last : last;
+      const m = close.length > 21 ? close.at(-22) ?? last : last;
+      const q = close.length > 63 ? close.at(-64) ?? last : last;
+
+      const calcVol20 = () => {
+        const n = 20;
+        if (close.length < n + 1) return null;
+        const rets: number[] = [];
+        for (let i = close.length - n; i < close.length; i++) {
+          const prev = close[i - 1];
+          const cur = close[i];
+          if (!Number.isFinite(prev) || !Number.isFinite(cur) || prev <= 0 || cur <= 0) continue;
+          rets.push(Math.log(cur / prev));
+        }
+        if (rets.length < 10) return null;
+        const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+        const varSum = rets.reduce((a, v) => a + (v - mean) ** 2, 0);
+        const std = Math.sqrt(varSum / rets.length);
+        return std * Math.sqrt(252) * 100;
+      };
+
+      const calcSeasonal = () => {
+        if (!timestamp.length || timestamp.length !== close.length) return { med: null, win: null };
+        const horizon = 20;
+        if (close.length < horizon + 50) return { med: null, win: null };
+        const lastTs = timestamp.at(-1)!;
+        const lastMonth = new Date(lastTs * 1000).getUTCMonth();
+        const fwd: number[] = [];
+        for (let i = 0; i < close.length - horizon; i++) {
+          const month = new Date(timestamp[i] * 1000).getUTCMonth();
+          if (month !== lastMonth) continue;
+          const a = close[i];
+          const b = close[i + horizon];
+          if (!Number.isFinite(a) || !Number.isFinite(b) || a === 0) continue;
+          fwd.push(((b - a) / a) * 100);
+        }
+        if (fwd.length < 20) return { med: null, win: null };
+        const sortedVals = [...fwd].sort((a, b) => a - b);
+        const med = sortedVals[Math.floor(sortedVals.length / 2)];
+        const win = (fwd.filter((v) => v > 0).length / fwd.length) * 100;
+        return { med, win };
+      };
+
+      const vol20 = calcVol20();
+      const seasonal = calcSeasonal();
+      const pct1mVal = pct(last, m);
+      const rec = recommendation({
+        seasonalMed20d: seasonal.med,
+        seasonalWin20d: seasonal.win,
+        cotZ: null,
+        vol20,
+        pct1m: pct1mVal,
+      });
+      const confidence = confidenceScore({
+        seasonalMed20d: seasonal.med,
+        seasonalWin20d: seasonal.win,
+        cotZ: null,
+        vol20,
+        pct1m: pct1mVal,
+      });
+
+      const custom: Row = {
+        instrument: { key: `custom:${symbol}`, name: symbol, yahooSymbol: symbol },
+        close,
+        timestamp,
+        last,
+        pct1w: pct(last, w),
+        pct1m: pct1mVal,
+        pct3m: pct(last, q),
+        cotZ: null,
+        stocksToUse: null,
+        vol20,
+        seasonalMed20d: seasonal.med,
+        seasonalWin20d: seasonal.win,
+        recAction: rec.recAction,
+        recLabel: rec.recLabel,
+        recReason: `Custom symbol (no COT/WASDE) • ${rec.recReason}`,
+        confidence,
+      };
+      setSelected(custom);
+    } finally {
+      setCustomLoading(false);
+    }
+  };
+
+  const exportCsv = () => {
+    const headers = [
+      'commodity',
+      'symbol',
+      'last',
+      'pct_1w',
+      'pct_1m',
+      'pct_3m',
+      'vol_20d',
+      'seasonal_med_20d',
+      'seasonal_win_20d',
+      'confidence',
+      'rec',
+      'cot_z',
+      'stocks_to_use',
+    ];
+    const lines = [headers.join(',')];
+    for (const r of sorted) {
+      const row = [
+        r.instrument.name,
+        r.instrument.yahooSymbol,
+        r.last.toFixed(6),
+        r.pct1w.toFixed(4),
+        r.pct1m.toFixed(4),
+        r.pct3m.toFixed(4),
+        r.vol20 === null ? '' : r.vol20.toFixed(4),
+        r.seasonalMed20d === null ? '' : r.seasonalMed20d.toFixed(4),
+        r.seasonalWin20d === null ? '' : r.seasonalWin20d.toFixed(2),
+        String(r.confidence),
+        r.recLabel,
+        r.cotZ === null ? '' : r.cotZ.toFixed(4),
+        r.stocksToUse === null ? '' : r.stocksToUse.toFixed(4),
+      ].map((v) => {
+        const s = String(v);
+        return /[,"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      });
+      lines.push(row.join(','));
+    }
+    const csv = lines.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    a.download = `agri_overview_${stamp}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const saveSnapshot = () => {
+    try {
+      const savedAt = Date.now();
+      const payload: OverviewSnapshot = {
+        savedAt,
+        sortKey,
+        filters: { onlySeasonalStrong, onlyCrowded, hideHighVol },
+        enso,
+        rows: sorted.map((r) => ({
+          commodity: r.instrument.name,
+          symbol: r.instrument.yahooSymbol,
+          last: r.last,
+          pct1w: r.pct1w,
+          pct1m: r.pct1m,
+          pct3m: r.pct3m,
+          vol20: r.vol20,
+          seasonalMed20d: r.seasonalMed20d,
+          seasonalWin20d: r.seasonalWin20d,
+          confidence: r.confidence,
+          rec: r.recLabel,
+          cotZ: r.cotZ,
+          stocksToUse: r.stocksToUse,
+        })),
+      };
+      const raw = localStorage.getItem('agri_overview_snapshots');
+      const parsed: unknown = raw ? JSON.parse(raw) : [];
+      const arr = Array.isArray(parsed) ? parsed : [];
+      const next = [...arr, payload].slice(-20);
+      localStorage.setItem('agri_overview_snapshots', JSON.stringify(next));
+      setSnapshotCount(next.length);
+      setLastSnapshotAt(savedAt);
+      const coerced = next
+        .filter((v): v is OverviewSnapshot => isRecord(v) && typeof v.savedAt === 'number' && Array.isArray((v as { rows?: unknown }).rows))
+        .slice(-20);
+      setSnapshots(coerced);
+    } catch {
+      // ignore
+    }
+  };
+
+  const applySnapshot = (s: OverviewSnapshot) => {
+    setSortKey(s.sortKey);
+    setOnlySeasonalStrong(!!s.filters.onlySeasonalStrong);
+    setOnlyCrowded(!!s.filters.onlyCrowded);
+    setHideHighVol(!!s.filters.hideHighVol);
+  };
+
+  const deleteSnapshot = (savedAt: number) => {
+    try {
+      const next = snapshots.filter((s) => s.savedAt !== savedAt);
+      localStorage.setItem('agri_overview_snapshots', JSON.stringify(next));
+      setSnapshots(next);
+      setSnapshotCount(next.length);
+      setLastSnapshotAt(next.at(-1)?.savedAt ?? null);
+      if (activeSnapshot?.savedAt === savedAt) setActiveSnapshot(null);
+    } catch {
+      // ignore
+    }
+  };
+
+  const clearSnapshots = () => {
+    try {
+      localStorage.removeItem('agri_overview_snapshots');
+    } catch {
+      // ignore
+    }
+    setSnapshots([]);
+    setSnapshotCount(0);
+    setLastSnapshotAt(null);
+    setActiveSnapshot(null);
+  };
 
   return (
     <>
@@ -381,7 +689,10 @@ export default function AgriDashboard({ isActive }: { isActive: boolean }) {
             <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 800 }}>Sort</span>
             <select
               value={sortKey}
-              onChange={(e) => setSortKey(e.target.value as any)}
+              onChange={(e) => {
+                const v = e.target.value;
+                if ((SORT_KEYS as readonly string[]).includes(v)) setSortKey(v as SortKey);
+              }}
               style={{
                 padding: '0.45rem 0.7rem',
                 borderRadius: 10,
@@ -401,6 +712,59 @@ export default function AgriDashboard({ isActive }: { isActive: boolean }) {
             </select>
           </div>
 
+          <button
+            onClick={exportCsv}
+            className={styles.badge + ' ' + styles.badgeNeutral}
+            style={{ cursor: 'pointer', userSelect: 'none' }}
+            title="Export CSV của bảng hiện tại (đã áp filter/sort)"
+          >
+            Export CSV
+          </button>
+          <button
+            onClick={saveSnapshot}
+            className={styles.badge + ' ' + styles.badgeNeutral}
+            style={{ cursor: 'pointer', userSelect: 'none' }}
+            title="Lưu snapshot (tối đa 20) vào localStorage để bạn xem lại sau"
+          >
+            Save snapshot{snapshotCount ? ` (${snapshotCount})` : ''}
+          </button>
+          {lastSnapshotAt && (
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700 }}>
+              Last saved: {new Date(lastSnapshotAt).toLocaleString()}
+            </span>
+          )}
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 800 }}>Search</span>
+            <input
+              value={customSymbol}
+              onChange={(e) => setCustomSymbol(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') openCustomSymbol();
+              }}
+              placeholder="VD: CL=F, AAPL, BTC-USD..."
+              style={{
+                padding: '0.45rem 0.7rem',
+                borderRadius: 10,
+                border: '1px solid var(--panel-border)',
+                background: 'rgba(0,0,0,0.25)',
+                color: 'var(--text-main)',
+                fontWeight: 800,
+                minWidth: 220,
+              }}
+            />
+            <button
+              onClick={openCustomSymbol}
+              className={styles.badge + ' ' + styles.badgeNeutral}
+              style={{ cursor: 'pointer', userSelect: 'none', opacity: customLoading ? 0.7 : 1 }}
+              title="Fetch riêng 1 symbol (không thuộc bảng) và mở modal"
+              disabled={customLoading}
+            >
+              {customLoading ? 'Loading…' : 'Open modal'}
+            </button>
+            {customError && <span style={{ color: '#ef4444', fontWeight: 800, fontSize: '0.85rem' }}>{customError}</span>}
+          </div>
+
           <label className={styles.checkboxLabel} style={{ fontSize: '0.9rem' }}>
             <input type="checkbox" checked={onlySeasonalStrong} onChange={(e) => setOnlySeasonalStrong(e.target.checked)} />
             Seasonal mạnh (Win ≥ 55%)
@@ -413,13 +777,151 @@ export default function AgriDashboard({ isActive }: { isActive: boolean }) {
             <input type="checkbox" checked={hideHighVol} onChange={(e) => setHideHighVol(e.target.checked)} />
             Ẩn vol rất cao (≥ 60%)
           </label>
+          <label className={styles.checkboxLabel} style={{ fontSize: '0.9rem' }}>
+            <input type="checkbox" checked={watchOnly} onChange={(e) => setWatchOnly(e.target.checked)} />
+            Watchlist only{watch.size ? ` (${watch.size})` : ''}
+          </label>
         </div>
 
-        <div style={{ overflowX: 'auto', marginTop: '1rem' }}>
-          <table style={{ width: '100%', minWidth: 1250, borderCollapse: 'collapse', fontSize: '0.95rem' }}>
+        <details style={{ marginTop: 14 }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 900, color: 'var(--text-main)' }}>
+            Snapshots ({snapshots.length})
+          </summary>
+          <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) 2fr', gap: 14 }}>
+            <div style={{ border: '1px solid var(--panel-border)', borderRadius: 12, overflow: 'hidden' }}>
+              <div style={{ padding: '0.75rem 0.9rem', borderBottom: '1px solid var(--panel-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ fontWeight: 900, color: 'var(--text-muted)', fontSize: '0.85rem', textTransform: 'uppercase' }}>Saved</div>
+                <button
+                  onClick={clearSnapshots}
+                  className={styles.badge + ' ' + styles.badgeNeutral}
+                  style={{ cursor: 'pointer' }}
+                  title="Xoá toàn bộ snapshots"
+                >
+                  Clear all
+                </button>
+              </div>
+              <div style={{ maxHeight: 260, overflow: 'auto' }}>
+                {snapshots.length === 0 && (
+                  <div style={{ padding: '0.9rem', color: 'var(--text-muted)' }}>Chưa có snapshot. Bấm “Save snapshot”.</div>
+                )}
+                {snapshots
+                  .slice()
+                  .sort((a, b) => b.savedAt - a.savedAt)
+                  .map((s) => (
+                    <button
+                      key={s.savedAt}
+                      onClick={() => setActiveSnapshot(s)}
+                      style={{
+                        display: 'block',
+                        width: '100%',
+                        textAlign: 'left',
+                        padding: '0.75rem 0.9rem',
+                        background: activeSnapshot?.savedAt === s.savedAt ? 'rgba(167,139,250,0.10)' : 'transparent',
+                        border: 'none',
+                        borderBottom: '1px solid rgba(255,255,255,0.06)',
+                        cursor: 'pointer',
+                        color: 'var(--text-main)',
+                      }}
+                      title="Click để xem chi tiết snapshot"
+                    >
+                      <div style={{ fontWeight: 900 }}>{new Date(s.savedAt).toLocaleString()}</div>
+                      <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: 2 }}>
+                        rows: {s.rows.length} · sort: {s.sortKey} · filters: {Object.entries(s.filters).filter(([, v]) => v).map(([k]) => k).join(', ') || 'none'}
+                      </div>
+                    </button>
+                  ))}
+              </div>
+            </div>
+
+            <div style={{ border: '1px solid var(--panel-border)', borderRadius: 12, padding: '0.9rem' }}>
+              {!activeSnapshot ? (
+                <div style={{ color: 'var(--text-muted)' }}>Chọn 1 snapshot để xem (hoặc restore filters).</div>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+                    <div>
+                      <div style={{ fontWeight: 1000, fontSize: '1.05rem' }}>{new Date(activeSnapshot.savedAt).toLocaleString()}</div>
+                      <div style={{ marginTop: 4, color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                        ENSO: {activeSnapshot.enso ? `${activeSnapshot.enso.state} (ONI ${activeSnapshot.enso.oni.toFixed(2)})` : 'N/A'}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <button
+                        onClick={() => applySnapshot(activeSnapshot)}
+                        className={styles.badge + ' ' + styles.badgeNeutral}
+                        style={{ cursor: 'pointer' }}
+                        title="Apply sort + filters của snapshot vào bảng hiện tại"
+                      >
+                        Restore filters
+                      </button>
+                      <button
+                        onClick={() => deleteSnapshot(activeSnapshot.savedAt)}
+                        className={styles.badge + ' ' + styles.badgeNeutral}
+                        style={{ cursor: 'pointer' }}
+                        title="Xoá snapshot này"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 12, overflow: 'auto', maxHeight: 260, borderRadius: 10, border: '1px solid rgba(255,255,255,0.06)' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                          {['Commodity', 'Symbol', '1M', 'Seasonal', 'Conf', 'Rec', 'COT', 'Stocks/Use'].map((h) => (
+                            <th key={h} style={{ padding: '0.5rem 0.75rem', textAlign: 'left', color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeSnapshot.rows.map((r) => (
+                          <tr key={r.symbol} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                            <td style={{ padding: '0.55rem 0.75rem', fontWeight: 900 }}>{r.commodity}</td>
+                            <td style={{ padding: '0.55rem 0.75rem', color: 'var(--text-muted)', fontFamily: 'Courier New, monospace' }}>{r.symbol}</td>
+                            <td style={{ padding: '0.55rem 0.75rem', fontWeight: 800, color: colorPct(r.pct1m) }}>{r.pct1m >= 0 ? '+' : ''}{r.pct1m.toFixed(2)}%</td>
+                            <td style={{ padding: '0.55rem 0.75rem', fontWeight: 800, color: r.seasonalMed20d === null ? 'var(--text-muted)' : r.seasonalMed20d >= 0 ? '#10b981' : '#ef4444' }}>
+                              {r.seasonalMed20d === null ? '-' : `${r.seasonalMed20d >= 0 ? '+' : ''}${r.seasonalMed20d.toFixed(2)}%`}{r.seasonalWin20d === null ? '' : ` (${r.seasonalWin20d.toFixed(0)}%)`}
+                            </td>
+                            <td style={{ padding: '0.55rem 0.75rem' }}>
+                              <span className={styles.badge + ' ' + (r.confidence >= 70 ? styles.badgeBuy : r.confidence >= 55 ? styles.badgeWarn : styles.badgeNeutral)} style={{ width: 'fit-content' }}>
+                                {r.confidence}
+                              </span>
+                            </td>
+                            <td style={{ padding: '0.55rem 0.75rem' }}>
+                              <span className={styles.badge + ' ' + (r.rec === 'BUY' ? styles.badgeBuy : r.rec === 'SELL' ? styles.badgeSell : styles.badgeNeutral)} style={{ width: 'fit-content' }}>
+                                {r.rec}
+                              </span>
+                            </td>
+                            <td style={{ padding: '0.55rem 0.75rem', color: 'var(--text-main)', fontWeight: 800 }}>{r.cotZ === null ? '-' : `${r.cotZ >= 0 ? '+' : ''}${r.cotZ.toFixed(2)}`}</td>
+                            <td style={{ padding: '0.55rem 0.75rem', color: 'var(--text-main)', fontWeight: 800 }}>{r.stocksToUse === null ? '-' : `${r.stocksToUse.toFixed(1)}%`}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </details>
+
+        <div
+          style={{
+            overflow: 'auto',
+            marginTop: '1rem',
+            maxHeight: '70vh',
+            borderRadius: 12,
+            border: '1px solid var(--panel-border)',
+          }}
+        >
+          <table style={{ width: '100%', minWidth: 1310, borderCollapse: 'separate', borderSpacing: 0, fontSize: '0.95rem' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--panel-border)' }}>
                 {[
+                  { h: '★', t: 'Watchlist: bấm để ghim/bỏ ghim' },
                   { h: 'Commodity', t: 'Hàng hoá' },
                   { h: 'Symbol', t: 'Yahoo futures ticker' },
                   { h: 'Last', t: 'Giá đóng cửa gần nhất' },
@@ -437,6 +939,10 @@ export default function AgriDashboard({ isActive }: { isActive: boolean }) {
                     key={h}
                     title={t}
                     style={{
+                      position: 'sticky',
+                      top: 0,
+                      zIndex: 2,
+                      background: 'rgba(15, 17, 21, 0.95)',
                       padding: '0.6rem 1rem',
                       textAlign: 'left',
                       color: 'var(--text-muted)',
@@ -466,6 +972,30 @@ export default function AgriDashboard({ isActive }: { isActive: boolean }) {
                     (e.currentTarget.style.background = i % 2 === 0 ? 'rgba(255,255,255,0.015)' : 'transparent')
                   }
                 >
+                  <td style={{ padding: '0.75rem 1rem' }}>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleWatch(r.instrument.key);
+                      }}
+                      aria-label="Toggle watchlist"
+                      title={watch.has(r.instrument.key) ? 'Bỏ ghim' : 'Ghim vào watchlist'}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: 34,
+                        height: 34,
+                        borderRadius: 10,
+                        border: '1px solid var(--panel-border)',
+                        background: 'rgba(0,0,0,0.15)',
+                        color: watch.has(r.instrument.key) ? '#fbbf24' : 'var(--text-muted)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <Star size={16} fill={watch.has(r.instrument.key) ? '#fbbf24' : 'transparent'} />
+                    </button>
+                  </td>
                   <td style={{ padding: '0.75rem 1rem', fontWeight: 800, color: '#e2e8f0' }}>{r.instrument.name}</td>
                   <td style={{ padding: '0.75rem 1rem', color: 'var(--text-muted)', fontFamily: 'Courier New, monospace' }}>
                     {r.instrument.yahooSymbol}
@@ -546,7 +1076,7 @@ export default function AgriDashboard({ isActive }: { isActive: boolean }) {
               ))}
               {!loading && sorted.length === 0 && (
                 <tr>
-                  <td colSpan={12} style={{ padding: '1.25rem 1rem', color: 'var(--text-muted)' }}>
+                  <td colSpan={13} style={{ padding: '1.25rem 1rem', color: 'var(--text-muted)' }}>
                     Không có kết quả (do filter). Tắt filter hoặc reload.
                   </td>
                 </tr>

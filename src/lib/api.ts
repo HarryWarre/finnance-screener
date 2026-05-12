@@ -10,6 +10,10 @@ export interface Fundamentals {
 
 const PROXY_URL = 'proxy.php'; // relative path — works in any subfolder on cPanel
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
 async function fetchJsonWithTimeout(url: string, timeoutMs = 6000): Promise<unknown> {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
@@ -47,30 +51,44 @@ export async function fetchChartData(
   range: YahooRange = DEFAULT_RANGE_BY_INTERVAL[interval]
 ): Promise<OHLCV | null> {
   try {
-    const data = (await fetchJsonWithTimeout(
+    const data = await fetchJsonWithTimeout(
       `${PROXY_URL}?action=chart&symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&range=${encodeURIComponent(range)}`,
       8000
-    )) as any;
+    );
 
-    if (data && data.chart && data.chart.result && data.chart.result[0]) {
-      const result = data.chart.result[0];
-      const timestamps = result.timestamp || [];
-      const closePrices = result.indicators?.quote?.[0]?.close || [];
+    if (!isRecord(data)) return null;
+    const chart = data.chart;
+    if (!isRecord(chart)) return null;
+    const result = (Array.isArray(chart.result) ? chart.result[0] : null) as unknown;
+    if (!isRecord(result)) return null;
+    const timestamps = Array.isArray(result.timestamp) ? (result.timestamp as unknown[]).filter((n) => typeof n === 'number') as number[] : [];
+    const indicators = result.indicators;
+    const quote0 =
+      isRecord(indicators) &&
+      Array.isArray(indicators.quote) &&
+      isRecord(indicators.quote[0])
+        ? (indicators.quote[0] as Record<string, unknown>)
+        : null;
+    const closePrices =
+      quote0 && Array.isArray(quote0.close)
+        ? (quote0.close as unknown[])
+        : [];
       
       // Filter out nulls
       const validTimestamps: number[] = [];
       const validCloses: number[] = [];
       
-      for (let i = 0; i < closePrices.length; i++) {
-        if (closePrices[i] !== null && closePrices[i] !== undefined) {
-          validTimestamps.push(timestamps[i]);
-          validCloses.push(closePrices[i]);
+    for (let i = 0; i < closePrices.length; i++) {
+      const c = closePrices[i];
+      const ts = timestamps[i];
+      if (typeof c === 'number' && typeof ts === 'number') {
+        validTimestamps.push(ts);
+        validCloses.push(c);
         }
       }
       
-      return { timestamp: validTimestamps, close: validCloses };
-    }
-    return null;
+    if (validCloses.length < 2) return null;
+    return { timestamp: validTimestamps, close: validCloses };
   } catch {
     console.warn(`⚠️ Could not fetch chart data for ${symbol} (Might not exist on Yahoo)`);
     return null;
@@ -125,17 +143,18 @@ export type CotSummary = {
 
 export async function fetchCot(instrument: string): Promise<CotSummary | null> {
   try {
-    const data = await fetchJsonWithTimeout(`${PROXY_URL}?action=cot&instrument=${encodeURIComponent(instrument)}`, 6000) as any;
-    if (data?.error) return null;
-    if (!data?.report_date) return null;
-    const nc = data.non_commercial || {};
-    const net = Number(nc.net ?? 0);
+    const data = await fetchJsonWithTimeout(`${PROXY_URL}?action=cot&instrument=${encodeURIComponent(instrument)}`, 6000);
+    if (!isRecord(data)) return null;
+    if ('error' in data) return null;
+    if (typeof data.report_date !== 'string' || !data.report_date) return null;
+    const nc = isRecord(data.non_commercial) ? data.non_commercial : {};
+    const net = typeof nc.net === 'number' ? nc.net : Number(nc.net ?? 0);
     const z52 = nc.zscore_52w === undefined || nc.zscore_52w === null ? null : Number(nc.zscore_52w);
     const idx3y = nc.cot_index_3y === undefined || nc.cot_index_3y === null ? null : Number(nc.cot_index_3y);
     return {
-      instrument: String(data.cftc_code || instrument),
-      reportDate: String(data.report_date),
-      marketName: String(data.market_name || ''),
+      instrument: typeof data.cftc_code === 'string' && data.cftc_code ? data.cftc_code : instrument,
+      reportDate: data.report_date,
+      marketName: typeof data.market_name === 'string' ? data.market_name : '',
       nonCommercialNet: net,
       nonCommercialZ52w: z52,
       nonCommercialCotIndex3y: idx3y,
@@ -153,12 +172,12 @@ export type EnsoSummary = {
 
 export async function fetchEnso(): Promise<EnsoSummary | null> {
   try {
-    const data = await fetchJsonWithTimeout(`${PROXY_URL}?action=enso`, 6000) as any;
-    if (!data?.asOf) return null;
-    const stateRaw = String(data.state || 'Neutral');
+    const data = await fetchJsonWithTimeout(`${PROXY_URL}?action=enso`, 6000);
+    if (!isRecord(data) || typeof data.asOf !== 'string' || !data.asOf) return null;
+    const stateRaw = typeof data.state === 'string' ? data.state : 'Neutral';
     const state: EnsoSummary['state'] =
       stateRaw === 'El Nino' || stateRaw === 'La Nina' || stateRaw === 'Neutral' ? stateRaw : 'Neutral';
-    return { asOf: String(data.asOf), oni: Number(data.oni || 0), state };
+    return { asOf: data.asOf, oni: Number(data.oni || 0), state };
   } catch {
     console.warn('⚠️ Could not fetch ENSO');
     return null;
@@ -180,13 +199,14 @@ export async function fetchWasde(commodity: WasdeSummary['commodity']): Promise<
     const data = await fetchJsonWithTimeout(
       `${PROXY_URL}?action=wasde&commodity=${encodeURIComponent(commodity)}&scope=us`,
       6000
-    ) as any;
-    if (data?.error) return null;
+    );
+    if (!isRecord(data)) return null;
+    if ('error' in data) return null;
     return {
       commodity,
-      reportMonth: String(data.reportMonth || ''),
+      reportMonth: typeof data.reportMonth === 'string' ? data.reportMonth : '',
       scope: 'us',
-      marketYear: data.marketYear ? String(data.marketYear) : null,
+      marketYear: typeof data.marketYear === 'string' ? data.marketYear : null,
       endingStocks: data.endingStocks === null || data.endingStocks === undefined ? null : Number(data.endingStocks),
       totalUse: data.totalUse === null || data.totalUse === undefined ? null : Number(data.totalUse),
       stocksToUse: data.stocksToUse === null || data.stocksToUse === undefined ? null : Number(data.stocksToUse),

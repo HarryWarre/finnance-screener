@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { X } from 'lucide-react';
+import { Copy, ExternalLink, X } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { createChart, ColorType, LineSeries } from 'lightweight-charts';
 import styles from '../App.module.css';
@@ -30,6 +30,16 @@ function pct(a: number, b: number) {
   return ((a - b) / b) * 100;
 }
 
+function quantile(sorted: number[], q: number) {
+  if (!sorted.length) return NaN;
+  const pos = (sorted.length - 1) * q;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  const baseVal = sorted[base]!;
+  const nextVal = sorted[Math.min(sorted.length - 1, base + 1)]!;
+  return baseVal + rest * (nextVal - baseVal);
+}
+
 export default function AgriModal({
   instrument,
   close,
@@ -58,6 +68,41 @@ export default function AgriModal({
       pct3m: pct(last, q),
     };
   }, [close]);
+
+  const seasonalityByMonth = useMemo(() => {
+    const horizon = 20; // ~1 month trading days
+    if (!timestamp.length || timestamp.length !== close.length || close.length < horizon + 120) return null;
+
+    const bucket: number[][] = Array.from({ length: 12 }, () => []);
+    for (let i = 0; i < close.length - horizon; i++) {
+      const ts = timestamp[i];
+      const a = close[i];
+      const b = close[i + horizon];
+      if (!Number.isFinite(ts) || !Number.isFinite(a) || !Number.isFinite(b) || a === 0) continue;
+      const month = new Date(ts * 1000).getUTCMonth();
+      bucket[month]!.push(((b - a) / a) * 100);
+    }
+
+    const series = bucket.map((arr) => {
+      if (arr.length < 15) return { n: arr.length, med: null as number | null, win: null as number | null, p25: null as number | null, p75: null as number | null };
+      const sorted = [...arr].sort((a, b) => a - b);
+      const med = quantile(sorted, 0.5);
+      const p25 = quantile(sorted, 0.25);
+      const p75 = quantile(sorted, 0.75);
+      const win = (arr.filter((v) => v > 0).length / arr.length) * 100;
+      return { n: arr.length, med, win, p25, p75 };
+    });
+
+    const lastMonth = new Date((timestamp.at(-1) ?? 0) * 1000).getUTCMonth();
+    const maxAbs = Math.max(
+      1,
+      ...series
+        .map((s) => (s.med === null ? 0 : Math.abs(s.med)))
+        .filter((v) => Number.isFinite(v)),
+    );
+
+    return { series, lastMonth, maxAbs };
+  }, [close, timestamp]);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -121,6 +166,43 @@ export default function AgriModal({
               {instrument.yahooSymbol}
             </span>
           </h2>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button
+              className={styles.badge + ' ' + styles.badgeNeutral}
+              style={{ cursor: 'pointer' }}
+              title="Copy tóm tắt"
+              onClick={async () => {
+                const text = [
+                  `${instrument.name} (${instrument.yahooSymbol})`,
+                  recLabel && recReason ? `Summary: ${recLabel} — ${recReason}` : '',
+                ]
+                  .filter(Boolean)
+                  .join('\n');
+                try {
+                  await navigator.clipboard.writeText(text);
+                } catch {
+                  // ignore
+                }
+              }}
+            >
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Copy size={14} /> Copy
+              </span>
+            </button>
+            <button
+              className={styles.badge + ' ' + styles.badgeNeutral}
+              style={{ cursor: 'pointer' }}
+              title="Mở TradingView (search)"
+              onClick={() => {
+                const q = encodeURIComponent(instrument.yahooSymbol);
+                window.open(`https://www.tradingview.com/symbols/?search=${q}`, '_blank', 'noopener,noreferrer');
+              }}
+            >
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <ExternalLink size={14} /> TradingView
+              </span>
+            </button>
+          </div>
         </div>
 
         <div className={styles.modalStats}>
@@ -181,6 +263,58 @@ export default function AgriModal({
             </span>
           </div>
         </div>
+
+        {seasonalityByMonth && (
+          <div className={styles.seasonalityPanel}>
+            <div className={styles.seasonalityHeader}>
+              <div style={{ fontWeight: 900 }}>Seasonality (12 tháng)</div>
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                Median forward ~20 phiên theo từng tháng (kèm win-rate & sample).
+              </div>
+            </div>
+
+            <div className={styles.seasonalityBars}>
+              {seasonalityByMonth.series.map((s, idx) => {
+                const isCurrent = idx === seasonalityByMonth.lastMonth;
+                const med = s.med;
+                const heightPct = med === null ? 0 : Math.min(48, (Math.abs(med) / seasonalityByMonth.maxAbs) * 48);
+                const color = med === null ? 'rgba(255,255,255,0.08)' : med >= 0 ? 'rgba(16,185,129,0.85)' : 'rgba(239,68,68,0.85)';
+                const title =
+                  med === null || s.win === null
+                    ? `Tháng ${idx + 1}: sample ${s.n} (chưa đủ dữ liệu)`
+                    : `Tháng ${idx + 1}: median ${med >= 0 ? '+' : ''}${med.toFixed(2)}% · win ${s.win.toFixed(0)}% · n=${s.n}\nIQR: ${s.p25?.toFixed(2)}% → ${s.p75?.toFixed(2)}%`;
+
+                return (
+                  <div key={idx} className={styles.seasonalityCol} title={title}>
+                    <div className={styles.seasonalityBarWrap} data-current={isCurrent ? '1' : '0'}>
+                      <div className={styles.seasonalityZero} />
+                      <div
+                        className={styles.seasonalityBar}
+                        style={{
+                          height: `${heightPct}%`,
+                          background: color,
+                          ...(med === null
+                            ? { bottom: '50%' }
+                            : med >= 0
+                              ? { bottom: '50%' }
+                              : { top: '50%' }),
+                        }}
+                      />
+                    </div>
+                    <div className={styles.seasonalityMonth}>{idx + 1}</div>
+                    <div className={styles.seasonalityMeta}>
+                      {med === null ? '—' : `${med >= 0 ? '+' : ''}${med.toFixed(1)}%`}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className={styles.seasonalityLegend}>
+              <span><b>Tip:</b> Tháng hiện tại có viền sáng; hover để xem win-rate & sample size.</span>
+            </div>
+          </div>
+        )}
 
         <div>
           <h3 style={{ marginTop: 0, fontSize: '1rem', color: '#8b949e' }}>Daily close</h3>
