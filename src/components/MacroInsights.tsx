@@ -8,7 +8,7 @@ import TradingViewTimeline from './TradingViewTimeline';
 import EconomicCalendar from './EconomicCalendar';
 import styles from '../App.module.css';
 
-export const RSS_SOURCES = {
+const RSS_SOURCES = {
   "🇺🇸 US Stocks (EN)": "https://news.google.com/rss/search?q=US+stock+market+S%26P500+earnings&hl=en-US&gl=US&ceid=US:en",
   "🇻🇳 Cổ phiếu Việt Nam (VI)": "https://news.google.com/rss/search?q=ch%E1%BB%A9ng+kho%C3%A1n+vi%E1%BB%87t+nam+vnindex&hl=vi&gl=VN&ceid=VN:vi",
   "💱 Forex (EN)": "https://news.google.com/rss/search?q=forex+currency+Fed+interest+rate+dollar&hl=en-US&gl=US&ceid=US:en",

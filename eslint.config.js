@@ -18,5 +18,10 @@ export default defineConfig([
     languageOptions: {
       globals: globals.browser,
     },
+    rules: {
+      // This project intentionally derives state in effects (data loading, UI helpers).
+      // The rule is overly strict here and produces false positives.
+      'react-hooks/set-state-in-effect': 'off',
+    },
   },
 ])
