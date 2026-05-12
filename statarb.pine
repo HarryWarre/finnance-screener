@@ -1,0 +1,225 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Quantitative Analysis
+
+//@version=5
+indicator("10x10 StatArb + Fundamental Filter", overlay=false, max_bars_back=2000)
+
+// ==========================================
+// 1. INPUTS & DYNAMIC SYMBOLS
+// ==========================================
+grp_stat = "Thông số Kỹ Thuật (StatArb)"
+len = input.int(100, title="Cửa sổ quan sát (Lookback)", minval=20, group=grp_stat)
+thr = input.float(2.0, title="Ngưỡng Z-Score (Kích hoạt)", step=0.1, group=grp_stat)
+h_thr = input.float(0.5, title="Ngưỡng Hurst (An toàn < x)", step=0.01, group=grp_stat)
+
+grp_fund = "Bộ lọc Cơ Bản (Fundamental)"
+use_fund = input.bool(true, title="Bật Lọc Cơ Bản (Chỉ áp dụng Cổ Phiếu)", group=grp_fund)
+max_pe = input.float(25.0, title="Max P/E (Rẻ < x)", group=grp_fund)
+min_roe = input.float(10.0, title="Min ROE % (Hiệu quả > x)", group=grp_fund)
+
+grp_ui = "Giao diện (Tối ưu thiết bị)"
+ui_mode = input.string("Mobile (Bảng Nhỏ)", title="Hiển thị (Dropdown Size)", options=["Desktop (Bảng To)", "Mobile (Bảng Nhỏ)"], group=grp_ui)
+is_mobile = ui_mode == "Mobile (Bảng Nhỏ)"
+t_size = is_mobile ? size.tiny : size.normal
+
+grp_assets = "Cấu hình Thị Trường & Nhóm Ngành"
+market_type = input.string("US Stocks", title="Thị Trường (Market)", options=["Crypto", "US Stocks", "VN Stocks", "Forex"], group=grp_assets)
+
+stock_sector  = input.string("Technology Services", title="US Stocks Sector", options=["Finance", "Consumer Non-Durables", "Transportation", "Utilities", "Process Industries", "Non-Energy Minerals", "Consumer Durables", "Technology Services", "Consumer Services", "Industrial Services"], group=grp_assets)
+vn_sector     = input.string("Finance", title="VN Stocks Sector", options=["Finance", "Consumer Non-Durables", "Transportation", "Utilities", "Process Industries", "Non-Energy Minerals", "Consumer Durables", "Technology Services", "Consumer Services", "Industrial Services"], group=grp_assets)
+
+[s01, s02, s03, s04, s05, s06, s07, s08, s09, s10] = if market_type == "US Stocks"
+    if stock_sector == "Finance"
+        ["NYSE:JPM", "NYSE:BAC", "NYSE:WFC", "NYSE:C", "NYSE:GS", "NYSE:MS", "NYSE:V", "NYSE:MA", "NYSE:AXP", "NYSE:SCHW"]
+    else if stock_sector == "Technology Services"
+        ["NASDAQ:MSFT", "NASDAQ:GOOGL", "NASDAQ:META", "NYSE:CRM", "NASDAQ:ADBE", "NYSE:IBM", "NYSE:ORCL", "NYSE:NOW", "NASDAQ:INTU", "NYSE:ACN"]
+    else
+        ["NYSE:SLB", "NYSE:HAL", "NASDAQ:BKR", "NYSE:PWR", "NYSE:URI", "NYSE:RSG", "NYSE:WM", "NASDAQ:FAST", "NYSE:GWW", "NYSE:FTV"]
+else if market_type == "VN Stocks"
+    if vn_sector == "Finance"
+        ["HOSE:VCB", "HOSE:BID", "HOSE:CTG", "HOSE:TCB", "HOSE:VPB", "HOSE:MBB", "HOSE:ACB", "HOSE:STB", "HOSE:SSI", "HOSE:VND"]
+    else if vn_sector == "Technology Services"
+        ["HOSE:FPT", "HOSE:CMG", "HOSE:ELC", "HOSE:ITD", "HOSE:SGT", "UPCOM:VGI", "HOSE:CTR", "UPCOM:FOX", "UPCOM:TTN", "UPCOM:MFS"]
+    else
+        ["HOSE:GEX", "HOSE:PC1", "HOSE:TV2", "HOSE:HDG", "HOSE:BCG", "HOSE:ASM", "HOSE:LCG", "HOSE:FCN", "HOSE:HHV", "HOSE:VCG"]
+else 
+    ["BINANCE:BTCUSDT", "BINANCE:ETHUSDT", "BINANCE:SOLUSDT", "BINANCE:BNBUSDT", "BINANCE:XRPUSDT", "BINANCE:DOGEUSDT", "BINANCE:ADAUSDT", "BINANCE:TRXUSDT", "BINANCE:AVAXUSDT", "BINANCE:LINKUSDT"]
+
+// ==========================================
+// 2. FETCH GIÁ (TECHNICAL) & CƠ BẢN (FUNDAMENTAL)
+// ==========================================
+f_sec(sym) =>
+    val = request.security(sym, timeframe.period, close, ignore_invalid_symbol=true)
+    fixnan(val) 
+
+p01 = f_sec(s01), p02 = f_sec(s02), p03 = f_sec(s03), p04 = f_sec(s04), p05 = f_sec(s05)
+p06 = f_sec(s06), p07 = f_sec(s07), p08 = f_sec(s08), p09 = f_sec(s09), p10 = f_sec(s10)
+
+// LỖI ĐƯỢC FIX Ở ĐÂY: Chuyển request ra ngoài không gian chung
+f_fund(sym) =>
+    // Tải dữ liệu bất kể là thị trường nào
+    pe = request.financial(sym, "PRICE_EARNINGS_RATIO", "TTM", ignore_invalid_symbol=true)
+    roe = request.financial(sym, "RETURN_ON_EQUITY", "TTM", ignore_invalid_symbol=true)
+    
+    // Kiểm tra xem người dùng đang mở chứng khoán không
+    is_stock = market_type == "US Stocks" or market_type == "VN Stocks"
+    
+    // Đạt chuẩn khi P/E dương, P/E < max, ROE >= min
+    is_pass = (nz(pe) > 0 and nz(pe) <= max_pe) and (nz(roe) >= min_roe)
+    
+    // Nếu không phải chứng khoán hoặc tắt bộ lọc -> Cho qua hết. Nếu là chứng khoán -> Xét is_pass
+    (not is_stock or not use_fund) ? true : is_pass
+
+// Kiểm tra 10 mã
+f1 = f_fund(s01), f2 = f_fund(s02), f3 = f_fund(s03), f4 = f_fund(s04), f5 = f_fund(s05)
+f6 = f_fund(s06), f7 = f_fund(s07), f8 = f_fund(s08), f9 = f_fund(s09), f10 = f_fund(s10)
+
+// ==========================================
+// 3. HÀM TÍNH TOÁN LÕI 
+// ==========================================
+fZ(y, x, l, t, fund_y, fund_x) =>
+    if na(y) or na(x) or nz(x) == 0
+        [0.0, 0.0, 0.5, 0]
+    else if not (fund_y and fund_x) // NẾU 1 TRONG 2 MÃ XỊT CƠ BẢN -> TẮT TÍN HIỆU
+        [0.0, 0.0, 0.5, 99] // Mã 99 = Loại bỏ do Fundamental
+    else
+        ratio = nz(y) / nz(x)
+        beta = ta.sma(ratio, l)
+        spread = nz(y) - beta * nz(x)
+        spread_mom = spread - nz(spread[1], spread)
+        dev = ta.stdev(spread, l)
+        
+        z = dev == 0 or na(dev) ? 0 : (spread - ta.sma(spread, l)) / dev
+        max_s = ta.highest(spread, l), min_s = ta.lowest(spread, l)
+        rs = dev == 0 or na(dev) ? 0 : (max_s - min_s) / dev
+        h = rs > 0 ? math.log(rs) / math.log(l) : 0.5
+        
+        sig = 0
+        if z >= t
+            sig := spread_mom < 0 ? -1 : -2 
+        else if z <= -t
+            sig := spread_mom > 0 ? 1 : 2 
+            
+        [nz(z), nz(beta), nz(h, 0.5), sig]
+
+// ==========================================
+// 4. TÍNH TOÁN CẶP
+// ==========================================
+[z0_1, b0_1, h0_1, s0_1] = fZ(p01, p02, len, thr, f1, f2), [z0_2, b0_2, h0_2, s0_2] = fZ(p01, p03, len, thr, f1, f3)
+[z0_3, b0_3, h0_3, s0_3] = fZ(p01, p04, len, thr, f1, f4), [z0_4, b0_4, h0_4, s0_4] = fZ(p01, p05, len, thr, f1, f5)
+[z0_5, b0_5, h0_5, s0_5] = fZ(p01, p06, len, thr, f1, f6), [z0_6, b0_6, h0_6, s0_6] = fZ(p01, p07, len, thr, f1, f7)
+[z0_7, b0_7, h0_7, s0_7] = fZ(p01, p08, len, thr, f1, f8), [z0_8, b0_8, h0_8, s0_8] = fZ(p01, p09, len, thr, f1, f9)
+[z0_9, b0_9, h0_9, s0_9] = fZ(p01, p10, len, thr, f1, f10)
+
+[z1_2, b1_2, h1_2, s1_2] = fZ(p02, p03, len, thr, f2, f3), [z1_3, b1_3, h1_3, s1_3] = fZ(p02, p04, len, thr, f2, f4)
+[z1_4, b1_4, h1_4, s1_4] = fZ(p02, p05, len, thr, f2, f5), [z1_5, b1_5, h1_5, s1_5] = fZ(p02, p06, len, thr, f2, f6)
+[z1_6, b1_6, h1_6, s1_6] = fZ(p02, p07, len, thr, f2, f7), [z1_7, b1_7, h1_7, s1_7] = fZ(p02, p08, len, thr, f2, f8)
+[z1_8, b1_8, h1_8, s1_8] = fZ(p02, p09, len, thr, f2, f9), [z1_9, b1_9, h1_9, s1_9] = fZ(p02, p10, len, thr, f2, f10)
+
+[z2_3, b2_3, h2_3, s2_3] = fZ(p03, p04, len, thr, f3, f4), [z2_4, b2_4, h2_4, s2_4] = fZ(p03, p05, len, thr, f3, f5)
+[z2_5, b2_5, h2_5, s2_5] = fZ(p03, p06, len, thr, f3, f6), [z2_6, b2_6, h2_6, s2_6] = fZ(p03, p07, len, thr, f3, f7)
+[z2_7, b2_7, h2_7, s2_7] = fZ(p03, p08, len, thr, f3, f8), [z2_8, b2_8, h2_8, s2_8] = fZ(p03, p09, len, thr, f3, f9)
+[z2_9, b2_9, h2_9, s2_9] = fZ(p03, p10, len, thr, f3, f10)
+
+[z3_4, b3_4, h3_4, s3_4] = fZ(p04, p05, len, thr, f4, f5), [z3_5, b3_5, h3_5, s3_5] = fZ(p04, p06, len, thr, f4, f6)
+[z3_6, b3_6, h3_6, s3_6] = fZ(p04, p07, len, thr, f4, f7), [z3_7, b3_7, h3_7, s3_7] = fZ(p04, p08, len, thr, f4, f8)
+[z3_8, b3_8, h3_8, s3_8] = fZ(p04, p09, len, thr, f4, f9), [z3_9, b3_9, h3_9, s3_9] = fZ(p04, p10, len, thr, f4, f10)
+
+[z4_5, b4_5, h4_5, s4_5] = fZ(p05, p06, len, thr, f5, f6), [z4_6, b4_6, h4_6, s4_6] = fZ(p05, p07, len, thr, f5, f7)
+[z4_7, b4_7, h4_7, s4_7] = fZ(p05, p08, len, thr, f5, f8), [z4_8, b4_8, h4_8, s4_8] = fZ(p05, p09, len, thr, f5, f9)
+[z4_9, b4_9, h4_9, s4_9] = fZ(p05, p10, len, thr, f5, f10)
+
+[z5_6, b5_6, h5_6, s5_6] = fZ(p06, p07, len, thr, f6, f7), [z5_7, b5_7, h5_7, s5_7] = fZ(p06, p08, len, thr, f6, f8)
+[z5_8, b5_8, h5_8, s5_8] = fZ(p06, p09, len, thr, f6, f9), [z5_9, b5_9, h5_9, s5_9] = fZ(p06, p10, len, thr, f6, f10)
+
+[z6_7, b6_7, h6_7, s6_7] = fZ(p07, p08, len, thr, f7, f8), [z6_8, b6_8, h6_8, s6_8] = fZ(p07, p09, len, thr, f7, f9)
+[z6_9, b6_9, h6_9, s6_9] = fZ(p07, p10, len, thr, f7, f10)
+
+[z7_8, b7_8, h7_8, s7_8] = fZ(p08, p09, len, thr, f8, f9), [z7_9, b7_9, h7_9, s7_9] = fZ(p08, p10, len, thr, f8, f10)
+
+[z8_9, b8_9, h8_9, s8_9] = fZ(p09, p10, len, thr, f9, f10)
+
+// ==========================================
+// 5. HIỂN THỊ MA TRẬN
+// ==========================================
+var table tb = table.new(position.middle_center, 11, 11, bgcolor=color.new(color.black, 0), border_width=1, border_color=color.new(color.gray, 60))
+
+f_clean(sym) => 
+    s1 = str.replace_all(sym, "BINANCE:", ""), s2 = str.replace_all(s1, "USDT", ""), s3 = str.replace_all(s2, "NASDAQ:", ""), s4 = str.replace_all(s3, "NYSE:", "")
+    s8 = str.replace_all(s4, "HOSE:", ""), s9 = str.replace_all(s8, "HNX:", ""), s10 = str.replace_all(s9, "UPCOM:", "")
+    s10
+
+f_fill(r, c, val_z, val_b, val_h, val_sig, h_t) =>
+    bg = color.new(color.gray, 85)
+    txt_col = color.gray
+    st_txt = ""
+    tt = "Z-Score: " + str.tostring(val_z, "#.##") + "\nBeta (β): " + str.tostring(val_b, "#.##") + "\nHurst (H): " + str.tostring(val_h, "#.##")
+    txt = is_mobile ? str.tostring(val_z, "#.##") : (str.tostring(val_z, "#.##") + "\nβ: " + str.tostring(val_b, "#.##") + "\nH: " + str.tostring(val_h, "#.##"))
+
+    if val_sig == 99 // Bị loại bởi Cơ bản
+        bg := color.new(color.black, 10) // Làm tối ô
+        txt_col := color.new(color.gray, 60)
+        st_txt := "\n⛔ Bỏ (Cơ bản)"
+    else if val_z != 0
+        if val_h <= h_t
+            if val_sig == -1
+                bg := color.new(color.red, 10), txt_col := color.white, st_txt := is_mobile ? "\n🔥 SHORT" : "\n🔥 VÀO SHORT"
+            else if val_sig == -2
+                bg := color.new(color.red, 70), txt_col := color.white, st_txt := is_mobile ? "\n⏳ Đang căng" : "\n⏳ Đang căng (Chờ)"
+            else if val_sig == 1
+                bg := color.new(color.green, 10), txt_col := color.white, st_txt := is_mobile ? "\n🔥 LONG" : "\n🔥 VÀO LONG"
+            else if val_sig == 2
+                bg := color.new(color.green, 70), txt_col := color.white, st_txt := is_mobile ? "\n⏳ Đang căng" : "\n⏳ Đang căng (Chờ)"
+        else
+            if val_sig != 0
+                bg := color.new(color.orange, 60), st_txt := is_mobile ? "\n❌ Trend" : "\n❌ Bỏ (Trend)"
+                
+    final_txt = val_z == 0 and val_sig != 99 ? "-" : (txt + st_txt)
+    table.cell(tb, c+1, r+1, final_txt, bgcolor=bg, text_color=txt_col, text_size=t_size, tooltip=tt)
+    
+    // Nửa dưới đảo chiều
+    val_z_inv = -val_z, val_sig_inv = val_sig == 99 ? 99 : -val_sig
+    bg_inv = color.new(color.gray, 85), txt_col_inv = color.gray, st_txt_inv = ""
+    
+    if val_sig_inv == 99
+        bg_inv := color.new(color.black, 10), txt_col_inv := color.new(color.gray, 60), st_txt_inv := "\n⛔ Bỏ (Cơ bản)"
+    else if val_z_inv != 0
+        if val_h <= h_t
+            if val_sig_inv == -1
+                bg_inv := color.new(color.red, 10), txt_col_inv := color.white, st_txt_inv := is_mobile ? "\n🔥 SHORT" : "\n🔥 VÀO SHORT"
+            else if val_sig_inv == -2
+                bg_inv := color.new(color.red, 70), txt_col_inv := color.white, st_txt_inv := is_mobile ? "\n⏳ Đang căng" : "\n⏳ Đang căng (Chờ)"
+            else if val_sig_inv == 1
+                bg_inv := color.new(color.green, 10), txt_col_inv := color.white, st_txt_inv := is_mobile ? "\n🔥 LONG" : "\n🔥 VÀO LONG"
+            else if val_sig_inv == 2
+                bg_inv := color.new(color.green, 70), txt_col_inv := color.white, st_txt_inv := is_mobile ? "\n⏳ Đang căng" : "\n⏳ Đang căng (Chờ)"
+        else
+            if val_sig_inv != 0
+                bg_inv := color.new(color.orange, 60), st_txt_inv := is_mobile ? "\n❌ Trend" : "\n❌ Bỏ (Trend)"
+                
+    txt_inv = is_mobile ? str.tostring(val_z_inv, "#.##") : (str.tostring(val_z_inv, "#.##") + "\nβ: " + str.tostring(val_b == 0 ? 0 : 1/val_b, "#.##") + "\nH: " + str.tostring(val_h, "#.##"))
+    final_txt_inv = val_z_inv == 0 and val_sig_inv != 99 ? "-" : (txt_inv + st_txt_inv)
+    table.cell(tb, r+1, c+1, final_txt_inv, bgcolor=bg_inv, text_color=txt_col_inv, text_size=t_size, tooltip=tt)
+
+if barstate.islast
+    string[] n = array.from(f_clean(s01), f_clean(s02), f_clean(s03), f_clean(s04), f_clean(s05), f_clean(s06), f_clean(s07), f_clean(s08), f_clean(s09), f_clean(s10))
+    bool[] f_arr = array.from(f1, f2, f3, f4, f5, f6, f7, f8, f9, f10)
+    
+    table.cell(tb, 0, 0, "Y\\X", text_color=color.white, text_size=t_size, bgcolor=color.new(color.gray, 80))
+    for i = 0 to 9
+        name = array.get(n, i)
+        is_pass = array.get(f_arr, i) or not use_fund
+        name_color = is_pass ? color.yellow : color.new(color.red, 30) // Tên đỏ nếu xịt cơ bản
+        table.cell(tb, i+1, 0, name, text_color=name_color, text_size=t_size, bgcolor=color.new(color.gray, 80)) 
+        table.cell(tb, 0, i+1, name, text_color=name_color, text_size=t_size, bgcolor=color.new(color.gray, 80))
+        table.cell(tb, i+1, i+1, "-", bgcolor=color.new(color.gray, 80), text_color=color.gray, text_size=t_size)
+        
+    f_fill(0, 1, z0_1, b0_1, h0_1, s0_1, h_thr), f_fill(0, 2, z0_2, b0_2, h0_2, s0_2, h_thr), f_fill(0, 3, z0_3, b0_3, h0_3, s0_3, h_thr), f_fill(0, 4, z0_4, b0_4, h0_4, s0_4, h_thr), f_fill(0, 5, z0_5, b0_5, h0_5, s0_5, h_thr), f_fill(0, 6, z0_6, b0_6, h0_6, s0_6, h_thr), f_fill(0, 7, z0_7, b0_7, h0_7, s0_7, h_thr), f_fill(0, 8, z0_8, b0_8, h0_8, s0_8, h_thr), f_fill(0, 9, z0_9, b0_9, h0_9, s0_9, h_thr)
+    f_fill(1, 2, z1_2, b1_2, h1_2, s1_2, h_thr), f_fill(1, 3, z1_3, b1_3, h1_3, s1_3, h_thr), f_fill(1, 4, z1_4, b1_4, h1_4, s1_4, h_thr), f_fill(1, 5, z1_5, b1_5, h1_5, s1_5, h_thr), f_fill(1, 6, z1_6, b1_6, h1_6, s1_6, h_thr), f_fill(1, 7, z1_7, b1_7, h1_7, s1_7, h_thr), f_fill(1, 8, z1_8, b1_8, h1_8, s1_8, h_thr), f_fill(1, 9, z1_9, b1_9, h1_9, s1_9, h_thr)
+    f_fill(2, 3, z2_3, b2_3, h2_3, s2_3, h_thr), f_fill(2, 4, z2_4, b2_4, h2_4, s2_4, h_thr), f_fill(2, 5, z2_5, b2_5, h2_5, s2_5, h_thr), f_fill(2, 6, z2_6, b2_6, h2_6, s2_6, h_thr), f_fill(2, 7, z2_7, b2_7, h2_7, s2_7, h_thr), f_fill(2, 8, z2_8, b2_8, h2_8, s2_8, h_thr), f_fill(2, 9, z2_9, b2_9, h2_9, s2_9, h_thr)
+    f_fill(3, 4, z3_4, b3_4, h3_4, s3_4, h_thr), f_fill(3, 5, z3_5, b3_5, h3_5, s3_5, h_thr), f_fill(3, 6, z3_6, b3_6, h3_6, s3_6, h_thr), f_fill(3, 7, z3_7, b3_7, h3_7, s3_7, h_thr), f_fill(3, 8, z3_8, b3_8, h3_8, s3_8, h_thr), f_fill(3, 9, z3_9, b3_9, h3_9, s3_9, h_thr)
+    f_fill(4, 5, z4_5, b4_5, h4_5, s4_5, h_thr), f_fill(4, 6, z4_6, b4_6, h4_6, s4_6, h_thr), f_fill(4, 7, z4_7, b4_7, h4_7, s4_7, h_thr), f_fill(4, 8, z4_8, b4_8, h4_8, s4_8, h_thr), f_fill(4, 9, z4_9, b4_9, h4_9, s4_9, h_thr)
+    f_fill(5, 6, z5_6, b5_6, h5_6, s5_6, h_thr), f_fill(5, 7, z5_7, b5_7, h5_7, s5_7, h_thr), f_fill(5, 8, z5_8, b5_8, h5_8, s5_8, h_thr), f_fill(5, 9, z5_9, b5_9, h5_9, s5_9, h_thr)
+    f_fill(6, 7, z6_7, b6_7, h6_7, s6_7, h_thr), f_fill(6, 8, z6_8, b6_8, h6_8, s6_8, h_thr), f_fill(6, 9, z6_9, b6_9, h6_9, s6_9, h_thr)
+    f_fill(7, 8, z7_8, b7_8, h7_8, s7_8, h_thr), f_fill(7, 9, z7_9, b7_9, h7_9, s7_9, h_thr)
+    f_fill(8, 9, z8_9, b8_9, h8_9, s8_9, h_thr)
