@@ -50,7 +50,16 @@ if ($action === 'chart') {
         echo json_encode(["error" => "Missing symbol"]);
         exit();
     }
-    $url = "https://query1.finance.yahoo.com/v8/finance/chart/" . rawurlencode($symbol) . "?interval=1d&range=1y";
+    $interval = isset($_GET['interval']) ? trim($_GET['interval']) : '1d';
+    $range = isset($_GET['range']) ? trim($_GET['range']) : '1y';
+
+    // Whitelist to avoid unexpected values
+    $allowedIntervals = ['1m','2m','5m','15m','30m','60m','90m','1h','1d','5d','1wk','1mo','3mo'];
+    $allowedRanges = ['1d','5d','1mo','3mo','6mo','1y','2y','5y','10y','ytd','max'];
+    if (!in_array($interval, $allowedIntervals, true)) $interval = '1d';
+    if (!in_array($range, $allowedRanges, true)) $range = '1y';
+
+    $url = "https://query1.finance.yahoo.com/v8/finance/chart/" . rawurlencode($symbol) . "?interval=" . rawurlencode($interval) . "&range=" . rawurlencode($range);
     $res = fetchUrl($url);
     if ($res['code'] == 200 && $res['body']) {
         echo $res['body'];
@@ -95,6 +104,62 @@ if ($action === 'chart') {
         http_response_code(502);
         echo json_encode(["error" => "RSS fetch failed", "code" => $res['code'], "curl_error" => $res['error']]);
     }
+
+// ── sp500: Fetch S&P 500 constituents from Wikipedia ────────────────────────
+} elseif ($action === 'sp500') {
+    header("Content-Type: application/json; charset=utf-8");
+
+    $url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies";
+    $res = fetchUrl($url, ['Accept: text/html, */*']);
+    if (!($res['code'] == 200 && $res['body'])) {
+        http_response_code(502);
+        echo json_encode(["error" => "Wikipedia fetch failed", "code" => $res['code']]);
+        exit();
+    }
+
+    $html = $res['body'];
+    libxml_use_internal_errors(true);
+    $dom = new DOMDocument();
+    $dom->loadHTML($html);
+    $xpath = new DOMXPath($dom);
+
+    // First wikitable is typically the constituents table (Symbol / Security / Sector / ...)
+    $table = $xpath->query("//table[contains(concat(' ', normalize-space(@class), ' '), ' wikitable ')]")->item(0);
+    if (!$table) {
+        http_response_code(502);
+        echo json_encode(["error" => "Could not locate constituents table"]);
+        exit();
+    }
+
+    $rows = $xpath->query(".//tr", $table);
+    $constituents = [];
+    $symbols = [];
+    foreach ($rows as $idx => $tr) {
+        if ($idx === 0) continue; // header
+        $cells = $xpath->query("./td", $tr);
+        if ($cells->length < 3) continue;
+        $sym = strtoupper(trim($cells->item(0)->textContent));
+        if ($sym === '') continue;
+        $sector = trim($cells->item(2)->textContent);
+        if ($sector === '') $sector = 'Unknown';
+
+        // Normalize to Yahoo Finance tickers
+        if ($sym === 'BRK.B') $sym = 'BRK-B';
+        if ($sym === 'BF.B') $sym = 'BF-B';
+        if (preg_match('/^[A-Z]{1,5}\\.[A-Z]$/', $sym)) {
+            $sym = str_replace('.', '-', $sym);
+        }
+
+        $symbols[] = $sym;
+        $constituents[] = ["symbol" => $sym, "sector" => $sector];
+    }
+
+    $symbols = array_values(array_unique($symbols));
+    echo json_encode([
+        "symbols" => $symbols, // backward-compat
+        "constituents" => $constituents,
+        "source" => "wikipedia"
+    ]);
 
 // ── unknown action ───────────────────────────────────────────────────────────
 } else {

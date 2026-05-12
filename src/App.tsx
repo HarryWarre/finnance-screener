@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { Play, Activity } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
-import { MARKETS, SECTORS, SYMBOLS, DEFAULT_PARAMS } from './lib/config';
-import type { MarketType } from './lib/config';
-import { fetchChartData, fetchFundamentals } from './lib/api';
+import { MARKETS, SECTORS, SYMBOLS, DEFAULT_PARAMS, INTERVALS } from './lib/config';
+import type { MarketType, Interval } from './lib/config';
+import { fetchChartData, fetchFundamentals, fetchSp500Symbols } from './lib/api';
 import type { Fundamentals } from './lib/api';
 import { calculateStatArb } from './lib/math';
 import styles from './App.module.css';
@@ -19,6 +19,7 @@ import ForexStatsPanel from './components/ForexStatsPanel';
 type Config = typeof DEFAULT_PARAMS & {
   market: MarketType;
   sector: string;
+  interval: Interval;
 };
 
 // --- Main Component ---
@@ -29,6 +30,17 @@ export default function App() {
     sector: "Information Technology"
   });
 
+  const parsedCustomSymbols = useMemo(() => {
+    if (!config.useCustomSymbols) return [];
+    const raw = config.customSymbols || '';
+    const parts = raw
+      .split(/[\s,;]+/g)
+      .map(s => s.trim())
+      .filter(Boolean);
+    const deduped = Array.from(new Set(parts.map(s => s.toUpperCase())));
+    return deduped.slice(0, Math.max(1, Number(config.customSymbolsLimit) || 1));
+  }, [config.useCustomSymbols, config.customSymbols, config.customSymbolsLimit]);
+
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'statarb' | 'macro' | 'correlation'>('statarb');
   const [statarbMode, setStatarbMode] = useState<'stocks' | 'forex'>('stocks');
@@ -38,14 +50,21 @@ export default function App() {
   const [prices, setPrices] = useState<Record<string, number[]>>({});
   const [matrix, setMatrix] = useState<Record<string, Record<string, PairResult>>>({});
   const [selectedPair, setSelectedPair] = useState<PairResult | null>(null);
+  const [compareY, setCompareY] = useState('');
+  const [compareX, setCompareX] = useState('');
 
   // Update symbols when market/sector changes
   useEffect(() => {
+    if (config.useCustomSymbols) {
+      setSymbols(parsedCustomSymbols);
+      setMatrix({});
+      return;
+    }
     const list = SYMBOLS[config.sector] || [];
     setSymbols(list);
     // Clear matrix on change
     setMatrix({});
-  }, [config.market, config.sector]);
+  }, [config.market, config.sector, config.useCustomSymbols, parsedCustomSymbols]);
 
   // Update available sectors when market changes
   useEffect(() => {
@@ -66,7 +85,7 @@ export default function App() {
       for (const sym of symbols) {
         try {
           const [chart, fund] = await Promise.all([
-            fetchChartData(sym),
+            fetchChartData(sym, config.interval),
             config.useFundamental ? fetchFundamentals(sym) : Promise.resolve({ pe: 0, roe: 100 })
           ]);
           if (chart) fetchedPrices[sym] = chart.close;
@@ -110,6 +129,39 @@ export default function App() {
     } catch (err) {
       console.error(err);
       alert("Error fetching data. Check console.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCompare = async () => {
+    const y = compareY.trim().toUpperCase();
+    const x = compareX.trim().toUpperCase();
+    if (!y || !x) return;
+    if (y === x) {
+      alert('Vui lòng nhập 2 mã khác nhau.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const [cy, cx] = await Promise.all([
+        fetchChartData(y, config.interval),
+        fetchChartData(x, config.interval),
+      ]);
+
+      if (!cy || !cx) {
+        alert('Không fetch được dữ liệu cho 1 trong 2 mã. Kiểm tra lại ticker.');
+        return;
+      }
+
+      setPrices((prev) => ({ ...prev, [y]: cy.close, [x]: cx.close }));
+
+      const res = calculateStatArb(cy.close, cx.close, config.lookback, config.zScoreThreshold, true);
+      setSelectedPair({ ...res, y, x });
+    } catch (e) {
+      console.error(e);
+      alert('Lỗi khi fetch/compute pair. Xem console.');
     } finally {
       setLoading(false);
     }
@@ -232,6 +284,125 @@ export default function App() {
               onChange={e => setConfig({...config, sector: e.target.value})}
             >
               {SECTORS[config.market].map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+
+          <div className={clsx(styles.controlGroup, styles.span2)}>
+            <label>So sánh nhanh (A vs B)</label>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <input
+                type="text"
+                placeholder="Mã A (Y)"
+                value={compareY}
+                onChange={(e) => setCompareY(e.target.value)}
+              />
+              <input
+                type="text"
+                placeholder="Mã B (X)"
+                value={compareX}
+                onChange={(e) => setCompareX(e.target.value)}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleCompare}
+              disabled={loading || !compareY.trim() || !compareX.trim()}
+              style={{
+                marginTop: 8,
+                padding: '0.65rem 0.9rem',
+                borderRadius: 10,
+                border: '1px solid rgba(59,130,246,0.35)',
+                background: loading ? 'rgba(255,255,255,0.08)' : 'rgba(59,130,246,0.15)',
+                color: loading ? 'var(--text-muted)' : 'var(--text-main)',
+                cursor: loading ? 'not-allowed' : 'pointer',
+                fontWeight: 800,
+              }}
+              title="Fetch riêng 2 mã và mở modal (không phụ thuộc bảng)"
+            >
+              {loading ? 'Đang fetch...' : 'So sánh & Mở Modal'}
+            </button>
+          </div>
+
+          <div className={styles.controlGroup}>
+            <label className={styles.checkboxLabel}>
+              <input
+                type="checkbox"
+                checked={config.useCustomSymbols}
+                onChange={e => setConfig({ ...config, useCustomSymbols: e.target.checked })}
+              />
+              Dùng danh sách Symbols (ví dụ S&P 500)
+            </label>
+            {config.useCustomSymbols && (
+              <>
+                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const list = await fetchSp500Symbols({
+                        sector: config.sector,
+                        limit: config.customSymbolsLimit,
+                      });
+                      if (!list.length) {
+                        alert('Không tải được danh sách S&P 500 (proxy/wiki lỗi).');
+                        return;
+                      }
+                      setConfig((prev) => ({
+                        ...prev,
+                        market: 'US Stocks',
+                        customSymbols: list.join(' '),
+                      }));
+                    }}
+                    style={{
+                      padding: '0.5rem 0.9rem',
+                      borderRadius: 10,
+                      border: '1px solid rgba(59,130,246,0.35)',
+                      background: 'rgba(59,130,246,0.15)',
+                      color: 'var(--text-main)',
+                      cursor: 'pointer',
+                      fontWeight: 700,
+                    }}
+                    title="Tự động lấy danh sách constituents từ Wikipedia (có thể thay đổi theo thời gian)"
+                  >
+                    Tải danh sách S&P 500
+                  </button>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 700 }}>Giới hạn</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={503}
+                      value={config.customSymbolsLimit}
+                      onChange={(e) => setConfig({ ...config, customSymbolsLimit: Number(e.target.value) })}
+                      style={{ width: 110 }}
+                      title="Chạy 503 symbols sẽ rất lâu và dễ bị rate-limit; nên giới hạn 30–100"
+                    />
+                  </div>
+                </div>
+
+                <textarea
+                  rows={4}
+                  placeholder="Dán list ticker, ví dụ: AAPL MSFT NVDA ... (cách nhau bằng dấu cách hoặc dấu phẩy)"
+                  value={config.customSymbols}
+                  onChange={e => setConfig({ ...config, customSymbols: e.target.value })}
+                />
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  Đang dùng: <span style={{ fontWeight: 700, color: 'var(--text-main)' }}>{parsedCustomSymbols.length}</span> symbols
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className={styles.controlGroup}>
+            <label>Khung Giá (Interval)</label>
+            <select
+              value={config.interval}
+              onChange={e => setConfig({ ...config, interval: e.target.value as Interval })}
+              title="Intraday thường chỉ lấy được dữ liệu gần đây; dùng 1d nếu muốn dài hơn"
+            >
+              {INTERVALS.map((itv) => (
+                <option key={itv} value={itv}>{itv}</option>
+              ))}
             </select>
           </div>
 

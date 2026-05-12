@@ -44,10 +44,17 @@ export const SYMBOLS: Record<string, string[]> = {
   ]
 };
 
+export const INTERVALS = ['1d', '1h', '60m', '30m', '15m', '5m', '1m'] as const;
+export type Interval = typeof INTERVALS[number];
+
 export const DEFAULT_PARAMS = {
   lookback: 100,
   zScoreThreshold: 2.0,
   hurstThreshold: 0.5,
+  interval: '1d' as Interval,
+  useCustomSymbols: false,
+  customSymbols: '',
+  customSymbolsLimit: 50,
   useFundamental: true,
   maxPe: 25.0,
   minRoe: 10.0
