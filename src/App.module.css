@@ -323,6 +323,8 @@ body {
   padding: 2rem;
   position: relative;
   box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
 }
 
 .closeButton {
@@ -356,8 +358,9 @@ body {
 }
 
 .modalStats {
-  display: flex;
-  gap: 1.5rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 1rem;
   background: var(--panel-bg);
   padding: 1rem;
   border-radius: 8px;
@@ -367,6 +370,7 @@ body {
 .statItem {
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .statLabel {
@@ -581,6 +585,18 @@ body {
   background: rgba(139, 148, 158, 0.1);
   color: var(--text-muted);
   border: 1px solid rgba(139, 148, 158, 0.3);
+}
+
+.badgeWarn {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--warning);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+.badgeDanger {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--danger);
+  border: 1px solid rgba(239, 68, 68, 0.35);
 }
 
 /* Forex Correlation Matrix */

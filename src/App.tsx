@@ -14,6 +14,7 @@ import type { PairResult } from './components/PairModal';
 import MacroInsights from './components/MacroInsights';
 import ForexCorrelation from './components/ForexCorrelation';
 import ForexStatsPanel from './components/ForexStatsPanel';
+import AgriDashboard from './components/AgriDashboard';
 
 // --- Types ---
 type Config = typeof DEFAULT_PARAMS & {
@@ -42,7 +43,7 @@ export default function App() {
   }, [config.useCustomSymbols, config.customSymbols, config.customSymbolsLimit]);
 
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'statarb' | 'macro' | 'correlation'>('statarb');
+  const [activeTab, setActiveTab] = useState<'statarb' | 'macro' | 'correlation' | 'agri'>('statarb');
   const [statarbMode, setStatarbMode] = useState<'stocks' | 'forex'>('stocks');
   
   // StatArb State
@@ -219,6 +220,12 @@ export default function App() {
         >
           📊 StatArb Matrix
         </button>
+        <button
+          className={clsx(styles.tabButton, activeTab === 'agri' && styles.tabButtonActive)}
+          onClick={() => setActiveTab('agri')}
+        >
+          🌾 Nông sản
+        </button>
         <button 
           className={clsx(styles.tabButton, activeTab === 'macro' && styles.tabButtonActive)}
           onClick={() => setActiveTab('macro')}
@@ -232,6 +239,8 @@ export default function App() {
           🔗 Forex Correlation
         </button>
       </div>
+
+      {activeTab === 'agri' && <AgriDashboard isActive />}
 
       {activeTab === 'statarb' && (
         <>
