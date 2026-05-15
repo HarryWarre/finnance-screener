@@ -6,6 +6,7 @@ import { fetchRssFeed } from '../lib/rss';
 import type { RssItem } from '../lib/rss';
 import TradingViewTimeline from './TradingViewTimeline';
 import EconomicCalendar from './EconomicCalendar';
+import MacroForexStrategy from './MacroForexStrategy';
 import styles from '../App.module.css';
 
 const RSS_SOURCES = {
@@ -24,7 +25,7 @@ interface MacroInsightsProps {
 }
 
 export default function MacroInsights({ isActive }: MacroInsightsProps) {
-  const [rssUrl, setRssUrl] = useState(RSS_SOURCES["🇺🇸 US Stocks (EN)"]);
+  const [rssUrl, setRssUrl] = useState(RSS_SOURCES["💱 Forex (EN)"]);
   const [news, setNews] = useState<RssItem[]>([]);
   const [loadingRss, setLoadingRss] = useState(false);
 
@@ -48,12 +49,10 @@ export default function MacroInsights({ isActive }: MacroInsightsProps) {
   if (!isActive) return null;
 
   return (
-    <motion.div 
-      className={styles.macroDashboard}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-    >
-        {/* LEFT COLUMN: RSS News */}
+    <motion.div className={styles.macroStack} initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <MacroForexStrategy />
+
+      <div className={styles.macroDashboard}>
         <div className={clsx(styles.glassPanel, styles.macroLeft)}>
           <div className={styles.controlGrid} style={{ marginBottom: '1.5rem' }}>
             <div className={styles.controlGroup}>
@@ -69,7 +68,7 @@ export default function MacroInsights({ isActive }: MacroInsightsProps) {
           {loadingRss ? (
             <div style={{ textAlign: 'center', padding: '3rem' }}>
               <Activity className="animate-spin" style={{ margin: '0 auto 1rem', width: 32, height: 32, color: 'var(--accent)' }} />
-              <p>Đang tải tin tức Vĩ mô...</p>
+              <p>Đang tải tin tức vĩ mô...</p>
             </div>
           ) : (
             <div className={styles.newsGrid} style={{ flex: 1, overflowY: 'auto' }}>
@@ -79,7 +78,7 @@ export default function MacroInsights({ isActive }: MacroInsightsProps) {
                     <h3 className={styles.newsTitle}>{item.title}</h3>
                   </div>
                   <div className={styles.newsDesc}>{item.description}</div>
-                  
+
                   <div className={styles.newsFooter}>
                     <span className={styles.newsDate}>
                       {new Date(item.pubDate).toLocaleDateString('vi-VN', {
@@ -89,7 +88,7 @@ export default function MacroInsights({ isActive }: MacroInsightsProps) {
                     </span>
                     <span className={clsx(
                       styles.badge,
-                      item.sentiment === 'BUY' ? styles.badgeBuy : 
+                      item.sentiment === 'BUY' ? styles.badgeBuy :
                       item.sentiment === 'SELL' ? styles.badgeSell : styles.badgeNeutral
                     )}>
                       {item.sentiment}
@@ -101,7 +100,6 @@ export default function MacroInsights({ isActive }: MacroInsightsProps) {
           )}
         </div>
 
-        {/* RIGHT COLUMN: Widgets */}
         <div className={styles.macroRight}>
           <div className={styles.widgetContainer} style={{ height: '400px' }}>
             <TradingViewTimeline />
@@ -109,6 +107,7 @@ export default function MacroInsights({ isActive }: MacroInsightsProps) {
           <div className={styles.widgetContainer} style={{ height: '500px' }}>
             <EconomicCalendar />
           </div>
+        </div>
       </div>
     </motion.div>
   );

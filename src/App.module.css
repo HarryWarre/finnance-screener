@@ -930,3 +930,401 @@ body {
 .corrMeta strong {
   color: var(--text-main);
 }
+
+.macroStack {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.strategyHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+@media (max-width: 900px) {
+  .strategyHeader {
+    flex-direction: column;
+  }
+}
+
+.strategyIntro {
+  margin: 0.35rem 0 0;
+  color: var(--text-muted);
+  line-height: 1.55;
+  max-width: 720px;
+}
+
+.strategyToolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.strategyKeyRow {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.strategyInput {
+  flex: 1 1 320px;
+  min-width: 260px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--panel-border);
+  color: var(--text-main);
+  padding: 0.75rem 0.9rem;
+  border-radius: 12px;
+  outline: none;
+}
+
+.strategyInput:focus {
+  border-color: var(--accent);
+}
+
+.strategyButton,
+.strategyButtonSecondary {
+  border: 1px solid transparent;
+  border-radius: 12px;
+  padding: 0.7rem 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  transition: all 0.18s ease;
+}
+
+.strategyButton {
+  background: var(--accent);
+  color: #fff;
+}
+
+.strategyButton:hover:enabled {
+  filter: brightness(1.06);
+}
+
+.strategyButtonSecondary {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.strategyButtonSecondary:hover:enabled {
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.strategyButton:disabled,
+.strategyButtonSecondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.strategyToolbarMeta {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+.strategyRuleBox {
+  min-width: 260px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 14px;
+  padding: 0.9rem 1rem;
+}
+
+.strategyRuleLabel {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-hover);
+  margin-bottom: 0.4rem;
+}
+
+.strategyRuleText {
+  line-height: 1.5;
+  font-weight: 600;
+}
+
+.strategyGrid {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+@media (max-width: 1100px) {
+  .strategyGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.strategyForm,
+.strategyOutput,
+.strategyCard,
+.strategyExecutionBox {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+}
+
+.strategyForm {
+  padding: 1rem;
+}
+
+.strategyToggle {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin-top: 1rem;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.strategyToggle input {
+  accent-color: var(--accent);
+}
+
+.strategyOutput {
+  padding: 1rem;
+}
+
+.strategyLoading,
+.strategyErrorBox,
+.strategyEmpty {
+  border-radius: 14px;
+  padding: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.strategyLoading {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.18);
+}
+
+.strategyErrorBox {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.18);
+}
+
+.strategyErrorBox p {
+  margin: 0.45rem 0 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.strategyEmpty {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+  color: var(--text-muted);
+}
+
+.strategyOutputTop {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.strategyConfidence {
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.strategyHeadline {
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.35rem;
+}
+
+.strategyAutoHeadline {
+  font-size: 1.05rem;
+  font-weight: 800;
+  margin-bottom: 0.45rem;
+}
+
+.strategySummary {
+  font-weight: 600;
+  line-height: 1.5;
+  margin-bottom: 0.4rem;
+}
+
+.strategyBias {
+  color: var(--text-muted);
+  line-height: 1.55;
+  margin-bottom: 1rem;
+}
+
+.strategyMetrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+  margin-bottom: 0.85rem;
+}
+
+@media (max-width: 640px) {
+  .strategyMetrics {
+    grid-template-columns: 1fr;
+  }
+}
+
+.strategyMetricCard {
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+  padding: 0.8rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.strategyMetricLabel {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.strategyExecutionBox {
+  padding: 0.9rem 1rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+@media (max-width: 640px) {
+  .strategyExecutionBox {
+    grid-template-columns: 1fr;
+  }
+}
+
+.strategyExecutionBox p {
+  margin: 0.35rem 0 0;
+  line-height: 1.5;
+}
+
+.strategyReasons {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.strategyReasons li + li {
+  margin-top: 0.45rem;
+}
+
+.strategyFootnote {
+  color: var(--text-muted);
+  line-height: 1.55;
+  padding: 0.95rem 1rem;
+  border-left: 3px solid rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.05);
+  border-radius: 0 12px 12px 0;
+}
+
+.strategyBuilderHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin: 1.5rem 0 1rem;
+}
+
+@media (max-width: 900px) {
+  .strategyBuilderHeader {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+.strategySection + .strategySection {
+  margin-top: 1.5rem;
+}
+
+.strategySectionHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 0.9rem;
+}
+
+@media (max-width: 900px) {
+  .strategySectionHeader {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+.strategySectionNote {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+.strategyCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.9rem;
+}
+
+.strategyCard {
+  padding: 1rem;
+}
+
+.strategyCardTop {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.8rem;
+}
+
+.strategyCardCurrency {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+}
+
+.strategyCardTitle {
+  display: block;
+  line-height: 1.4;
+  margin-bottom: 0.55rem;
+}
+
+.strategyCardBody {
+  margin: 0 0 0.55rem;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.strategyCardMeta {
+  color: var(--accent-hover);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.strategySourceLink {
+  display: inline-block;
+  margin-top: 0.45rem;
+  color: var(--accent-hover);
+  text-decoration: none;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.strategySourceLink:hover {
+  text-decoration: underline;
+}
