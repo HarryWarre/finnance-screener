@@ -596,33 +596,25 @@ export default function TerminalDashboard({ isActive }: { isActive: boolean }) {
         </div>
       </div>
 
-      <div className={styles.termGrid}>
-        <div className={styles.termCol}>
-          {renderSignalCard('Cổ phiếu', 'stocks')}
-          {renderWatchTable('US Stocks', byAsset.StocksUS)}
-        </div>
-        <div className={styles.termCol}>
-          {renderSignalCard('Crypto', 'crypto')}
-          {renderWatchTable('Crypto', byAsset.Crypto)}
-        </div>
-        <div className={styles.termCol}>
-          {renderSignalCard('Forex', 'forex')}
-          {renderWatchTable('Forex', byAsset.Forex)}
-        </div>
-        <div className={styles.termCol}>
-          {renderSignalCard('Commodities', 'commodities')}
-          {renderWatchTable('Futures/Commodities', byAsset.Futures)}
-          {renderWatchTable('Nông sản', byAsset.Agriculture)}
-          {renderWatchTable('Việt Nam', byAsset.Vietnam)}
-        </div>
-      </div>
+      <div className={styles.termMasonry}>
+        <div className={styles.termItem}>{renderSignalCard('Cổ phiếu', 'stocks')}</div>
+        <div className={styles.termItem}>{renderWatchTable('US Stocks', byAsset.StocksUS)}</div>
+        <div className={styles.termItem}>{renderNewsPanel('stocks')}</div>
 
-      <div className={styles.termNewsGrid}>
-        {renderNewsPanel('crypto')}
-        {renderNewsPanel('stocks')}
-        {renderNewsPanel('forex')}
-        {renderNewsPanel('commodities')}
-        {renderNewsPanel('agri')}
+        <div className={styles.termItem}>{renderSignalCard('Crypto', 'crypto')}</div>
+        <div className={styles.termItem}>{renderWatchTable('Crypto', byAsset.Crypto)}</div>
+        <div className={styles.termItem}>{renderNewsPanel('crypto')}</div>
+
+        <div className={styles.termItem}>{renderSignalCard('Forex', 'forex')}</div>
+        <div className={styles.termItem}>{renderWatchTable('Forex', byAsset.Forex)}</div>
+        <div className={styles.termItem}>{renderNewsPanel('forex')}</div>
+
+        <div className={styles.termItem}>{renderSignalCard('Commodities', 'commodities')}</div>
+        <div className={styles.termItem}>{renderWatchTable('Futures/Commodities', byAsset.Futures)}</div>
+        <div className={styles.termItem}>{renderWatchTable('Nông sản', byAsset.Agriculture)}</div>
+        <div className={styles.termItem}>{renderWatchTable('Việt Nam', byAsset.Vietnam)}</div>
+        <div className={styles.termItem}>{renderNewsPanel('commodities')}</div>
+        <div className={styles.termItem}>{renderNewsPanel('agri')}</div>
       </div>
     </motion.div>
   );
