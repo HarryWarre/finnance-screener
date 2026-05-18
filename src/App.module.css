@@ -34,10 +34,17 @@ body {
   min-height: 100vh;
 }
 
+@media (max-width: 720px) {
+  .container {
+    padding: 0.75rem;
+    gap: 1.2rem;
+  }
+}
+
 .container {
-  max-width: 1400px;
+  max-width: 100%;
   margin: 0 auto;
-  padding: 2rem;
+  padding: 1rem;
   display: flex;
   flex-direction: column;
   gap: 2rem;
@@ -1684,4 +1691,792 @@ body {
   color: rgba(245, 158, 11, 0.95);
   border-color: rgba(245, 158, 11, 0.3);
   background: rgba(245, 158, 11, 0.12);
+}
+
+/* Terminal Core (Data layer + Alerts) */
+.terminalStack {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.terminalTop {
+  padding: 1.2rem;
+}
+
+.terminalTopRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.terminalTitle {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.terminalH1 {
+  font-weight: 950;
+  font-size: 1.25rem;
+  letter-spacing: -0.3px;
+}
+
+.terminalSub {
+  color: var(--text-muted);
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.terminalSyncBtn {
+  padding: 0.6rem 0.9rem;
+  border-radius: 12px;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--text-main);
+  cursor: pointer;
+  font-weight: 950;
+}
+
+.terminalSyncBtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.terminalAddRow {
+  margin-top: 1rem;
+  display: flex;
+  gap: 0.8rem;
+  align-items: flex-end;
+}
+
+.terminalAutoRow {
+  margin-top: 0.85rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.terminalAutoRight {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.terminalAutoInput {
+  width: 90px;
+}
+
+.terminalSignalRow {
+  margin-top: 0.9rem;
+  display: grid;
+  grid-template-columns: 1fr 1.6fr;
+  gap: 0.9rem;
+  padding: 0.9rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+@media (max-width: 980px) {
+  .terminalSignalRow {
+    grid-template-columns: 1fr;
+  }
+}
+
+.terminalSignalTitle {
+  color: var(--text-muted);
+  font-weight: 950;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.78rem;
+}
+
+.terminalSignalValue {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-top: 0.35rem;
+}
+
+.terminalSignalLabel {
+  font-weight: 950;
+  letter-spacing: 0.06em;
+}
+
+.terminalSignalPct {
+  font-size: 2rem;
+  font-weight: 950;
+  font-variant-numeric: tabular-nums;
+}
+
+.terminalSignalDrivers {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+  align-items: start;
+}
+
+@media (max-width: 560px) {
+  .terminalSignalDrivers {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.terminalDriver {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.55rem 0.6rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.terminalAddLeft {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.terminalAddLeft label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-weight: 900;
+}
+
+.terminalAddBtn {
+  padding: 0.62rem 0.9rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-main);
+  cursor: pointer;
+  font-weight: 950;
+  min-width: 120px;
+}
+
+.terminalAddBtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.terminalError {
+  color: rgba(239, 68, 68, 0.95);
+  font-weight: 900;
+  font-size: 0.85rem;
+}
+
+.terminalGrid {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .terminalGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.terminalLeft {
+  padding: 1.2rem;
+}
+
+.terminalRightCol {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.terminalRight {
+  padding: 1.2rem;
+}
+
+.terminalSectionTitle {
+  font-weight: 950;
+  letter-spacing: -0.2px;
+  margin-bottom: 0.8rem;
+}
+
+.terminalSectionTitleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin-bottom: 0.6rem;
+}
+
+.terminalSectionControls {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.terminalTable {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.terminalTableBody {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 68vh;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.terminalCompact .terminalTableRow {
+  padding: 0.5rem 0.15rem;
+}
+
+.terminalCompact .terminalNewsItem {
+  padding: 0.55rem 0.65rem;
+}
+
+.terminalCompact .terminalSignalPct {
+  font-size: 1.6rem;
+}
+
+.terminalCompact .terminalMiniBtn,
+.terminalCompact .terminalMiniBtnDanger {
+  padding: 0.3rem 0.45rem;
+  font-size: 0.78rem;
+}
+
+.terminalTableHead {
+  display: grid;
+  grid-template-columns: 110px 1.3fr 0.6fr 0.5fr 0.5fr 0.6fr 2fr;
+  gap: 0.6rem;
+  padding: 0.5rem 0.2rem;
+  border-bottom: 1px solid var(--panel-border);
+  color: var(--text-muted);
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.terminalTableRow {
+  display: grid;
+  grid-template-columns: 110px 1.3fr 0.6fr 0.5fr 0.5fr 0.6fr 2fr;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.75rem 0.2rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.terminalTableRow:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.terminalMono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-weight: 950;
+}
+
+.terminalMuted {
+  color: var(--text-muted);
+  font-weight: 800;
+}
+
+.terminalNum {
+  font-variant-numeric: tabular-nums;
+  font-weight: 950;
+}
+
+.terminalPos {
+  color: rgba(16, 185, 129, 0.95);
+}
+
+.terminalNeg {
+  color: rgba(239, 68, 68, 0.95);
+}
+
+.terminalActions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.terminalMiniBtn {
+  padding: 0.35rem 0.55rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-main);
+  cursor: pointer;
+  font-weight: 900;
+  font-size: 0.82rem;
+}
+
+.terminalMiniBtn:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.terminalMiniBtnDanger {
+  padding: 0.35rem 0.55rem;
+  border-radius: 10px;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.12);
+  color: rgba(239, 68, 68, 0.95);
+  cursor: pointer;
+  font-weight: 950;
+  font-size: 0.82rem;
+}
+
+.terminalMiniBtnDanger:hover {
+  background: rgba(239, 68, 68, 0.18);
+}
+
+.terminalEmpty {
+  padding: 1rem 0.2rem;
+  color: var(--text-muted);
+  font-weight: 800;
+}
+
+.terminalAlerts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.terminalAlertRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  align-items: center;
+  padding: 0.75rem 0.8rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.terminalAlertMain {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.terminalAlertName {
+  font-weight: 950;
+}
+
+.terminalAlertMeta {
+  color: var(--text-muted);
+  font-weight: 800;
+  font-size: 0.82rem;
+}
+
+.terminalAlertBtns {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.terminalEvents {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.terminalNewsList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  max-height: 520px;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.terminalNewsItem {
+  text-decoration: none;
+  color: var(--text-main);
+  padding: 0.7rem 0.8rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.terminalNewsItem:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.terminalNewsTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.terminalNewsTime {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.terminalNewsBadge {
+  font-size: 0.75rem;
+  font-weight: 950;
+  letter-spacing: 0.06em;
+}
+
+.terminalNewsTitle {
+  font-weight: 900;
+  line-height: 1.35;
+}
+
+.terminalEventRow {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 0.8rem;
+  padding: 0.4rem 0.2rem;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.06);
+}
+
+@media (max-width: 560px) {
+  .terminalTableHead, .terminalTableRow {
+    grid-template-columns: 90px 1.2fr 0.6fr 0.6fr 0.6fr 0.7fr 1.6fr;
+  }
+  .terminalEventRow {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Terminal Pro (multi-column, multi-news windows) */
+.termRoot {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.termHeader {
+  padding: 1rem;
+}
+
+.termHeaderRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.termH1 {
+  font-weight: 950;
+  font-size: 1.25rem;
+  letter-spacing: -0.3px;
+}
+
+.termSub {
+  color: var(--text-muted);
+  font-weight: 800;
+  font-size: 0.9rem;
+  margin-top: 0.25rem;
+}
+
+.termHeaderTools {
+  margin-top: 0.85rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 0.85rem;
+}
+
+.termAddInline {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.termAddInline input {
+  min-width: 280px;
+}
+
+.termGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.9rem;
+  align-items: start;
+}
+
+@media (max-width: 1400px) {
+  .termGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1100px) {
+  .termGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .termGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.termCol {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.termPanel {
+  padding: 0.9rem;
+}
+
+.termCompact {
+  padding: 0.75rem;
+}
+
+.termPanelTitleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  margin-bottom: 0.6rem;
+}
+
+.termPanelTitle {
+  font-weight: 950;
+  letter-spacing: -0.2px;
+}
+
+.termPanelRight {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.termSignalCard {
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.12);
+  padding: 0.9rem;
+}
+
+.termSignalTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.termSignalMarket {
+  font-weight: 950;
+}
+
+.termSignalBadge {
+  font-weight: 950;
+  letter-spacing: 0.06em;
+}
+
+.termSignalScoreRow {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-top: 0.45rem;
+}
+
+.termSignalScore {
+  font-size: 1.9rem;
+  font-weight: 950;
+  font-variant-numeric: tabular-nums;
+}
+
+.termSignalDrivers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-top: 0.7rem;
+}
+
+.termDriver {
+  padding: 0.55rem 0.6rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.termTableHead {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr 0.7fr 0.9fr 0.6fr;
+  gap: 0.55rem;
+  padding: 0.45rem 0.15rem;
+  border-bottom: 1px solid var(--panel-border);
+  color: var(--text-muted);
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  font-size: 0.73rem;
+  text-transform: uppercase;
+}
+
+.termTableBody {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: 56vh;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.termTableRow {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr 0.7fr 0.9fr 0.6fr;
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.65rem 0.15rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.termCompact .termTableRow {
+  padding: 0.48rem 0.12rem;
+}
+
+.termRowActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.termNewsGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.9rem;
+  align-items: start;
+}
+
+@media (max-width: 1400px) {
+  .termNewsGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .termNewsGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.termNewsControls {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.termNewsStats {
+  display: grid;
+  grid-template-columns: 0.6fr 1.6fr 0.7fr;
+  gap: 0.6rem;
+  padding: 0.65rem 0.15rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  margin-bottom: 0.7rem;
+}
+
+.termStat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.termStatWide {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.termSentBar {
+  height: 10px;
+  width: 100%;
+  border-radius: 999px;
+  overflow: hidden;
+  display: flex;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.termSentSeg {
+  height: 100%;
+}
+
+.termSentPos {
+  background: rgba(16, 185, 129, 0.65);
+}
+
+.termSentNeu {
+  background: rgba(245, 158, 11, 0.55);
+}
+
+.termSentNeg {
+  background: rgba(239, 68, 68, 0.65);
+}
+
+.termNewsList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 480px;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.termNewsItem {
+  text-decoration: none;
+  color: var(--text-main);
+  padding: 0.65rem 0.75rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.termCompact .termNewsItem {
+  padding: 0.55rem 0.65rem;
+}
+
+.termNewsItem:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.termNewsTop {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.termNewsBadge {
+  font-size: 0.75rem;
+  font-weight: 950;
+  letter-spacing: 0.06em;
+}
+
+.termNewsTitle {
+  font-weight: 900;
+  line-height: 1.35;
 }
