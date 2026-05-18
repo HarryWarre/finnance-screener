@@ -1,4 +1,14 @@
-export type MacroPair = 'EUR/USD' | 'GBP/USD' | 'USD/JPY' | 'AUD/USD';
+export type MacroPair =
+  | 'EUR/USD'
+  | 'GBP/USD'
+  | 'AUD/USD'
+  | 'USD/JPY'
+  | 'EUR/GBP'
+  | 'EUR/JPY'
+  | 'EUR/AUD'
+  | 'GBP/JPY'
+  | 'GBP/AUD'
+  | 'AUD/JPY';
 export type EventTier = 'S' | 'A' | 'B';
 export type EventFamily = 'usd_data' | 'central_bank' | 'domestic_data';
 export type SurpriseState = 'bullish' | 'bearish' | 'none';
@@ -103,7 +113,7 @@ export const MACRO_EVENTS: MacroEventConfig[] = [
     family: 'central_bank',
     setup: 'EUR continuation after ECB repricing',
     entryWindow: 'T+30 to T+120',
-    pairs: ['EUR/USD'],
+    pairs: ['EUR/USD', 'EUR/GBP', 'EUR/JPY', 'EUR/AUD'],
     thesis: 'Biểu hiện sạch nhất là qua EUR/USD sau khi phản ứng đầu tiên được giá chấp nhận.'
   },
   {
@@ -114,7 +124,7 @@ export const MACRO_EVENTS: MacroEventConfig[] = [
     family: 'central_bank',
     setup: 'GBP continuation after BoE repricing',
     entryWindow: 'T+30 to T+120',
-    pairs: ['GBP/USD'],
+    pairs: ['GBP/USD', 'EUR/GBP', 'GBP/JPY', 'GBP/AUD'],
     thesis: 'Tốt nhất khi lợi suất UK, GBP và statement cùng chỉ về một hướng.'
   },
   {
@@ -125,7 +135,7 @@ export const MACRO_EVENTS: MacroEventConfig[] = [
     family: 'central_bank',
     setup: 'AUD continuation after RBA surprise',
     entryWindow: 'T+30 to T+120',
-    pairs: ['AUD/USD'],
+    pairs: ['AUD/USD', 'EUR/AUD', 'GBP/AUD', 'AUD/JPY'],
     thesis: 'Đáng tin nhất khi surprise đủ rõ và risk sentiment không đi ngược.'
   },
   {
@@ -136,7 +146,7 @@ export const MACRO_EVENTS: MacroEventConfig[] = [
     family: 'central_bank',
     setup: 'JPY continuation after policy shift',
     entryWindow: 'T+30 to T+120',
-    pairs: ['USD/JPY'],
+    pairs: ['USD/JPY', 'EUR/JPY', 'GBP/JPY', 'AUD/JPY'],
     thesis: 'USD/JPY cần lợi suất xác nhận, không chỉ một cú spike theo headline.'
   },
   {
@@ -147,7 +157,7 @@ export const MACRO_EVENTS: MacroEventConfig[] = [
     family: 'domestic_data',
     setup: 'AUD breakout after labor surprise',
     entryWindow: 'T+15 to T+60',
-    pairs: ['AUD/USD'],
+    pairs: ['AUD/USD', 'EUR/AUD', 'GBP/AUD', 'AUD/JPY'],
     thesis: 'Đáng trade trên H1 khi số liệu lao động làm thay đổi kỳ vọng RBA.'
   },
   {
@@ -191,7 +201,49 @@ export const PAIR_PLAYBOOKS: PairPlaybook[] = [
     preferredEvents: 'US CPI, FOMC, RBA, Australia jobs.',
     bestUse: 'Catalyst nội địa của AUD hoặc shock USD sạch trong giờ thanh khoản tốt.',
     avoidWhen: 'Gap ở phiên Á hoặc headline China-risk xung đột.'
-  }
+  },
+  {
+    pair: 'EUR/GBP',
+    drivers: 'ECB vs BoE repricing, relative growth/inflation, risk premium.',
+    preferredEvents: 'ECB, BoE.',
+    bestUse: 'Sau rate decision khi narrative divergence rõ và H1 không bị whipsaw.',
+    avoidWhen: 'Cùng ngày có tier-S của Mỹ làm USD kéo toàn bộ G10.'
+  },
+  {
+    pair: 'EUR/JPY',
+    drivers: 'EUR rates vs JPY rates, risk sentiment, carry unwind.',
+    preferredEvents: 'ECB, BoJ (và các ngày risk shock).',
+    bestUse: 'Khi EUR repricing rõ hoặc JPY bị squeeze/cover theo risk move.',
+    avoidWhen: 'Event BoJ headline-driven gây spike rồi mean-revert mạnh.'
+  },
+  {
+    pair: 'EUR/AUD',
+    drivers: 'EU vs AU growth, risk sentiment, China-linked impulses.',
+    preferredEvents: 'ECB, RBA, Australia jobs.',
+    bestUse: 'Khi AU data đủ mạnh làm đổi pricing RBA hoặc risk regime shift.',
+    avoidWhen: 'Phiên Á thanh khoản kém hoặc có gap lớn trước event.'
+  },
+  {
+    pair: 'GBP/JPY',
+    drivers: 'UK-JP rate differential, risk sentiment, carry volatility.',
+    preferredEvents: 'BoE, BoJ (và các ngày risk shock).',
+    bestUse: 'Breakout theo carry khi yields + price đồng thuận.',
+    avoidWhen: 'Risk-off mạnh làm JPY bid quá nhanh rồi giật ngược.'
+  },
+  {
+    pair: 'GBP/AUD',
+    drivers: 'UK vs AU rates, commodities/risk-on, China headlines.',
+    preferredEvents: 'BoE, RBA, Australia jobs.',
+    bestUse: 'Khi 1 bên (GBP/AUD) có policy surprise rõ hơn bên còn lại.',
+    avoidWhen: 'Ngày có nhiều headline China/commodities làm AUD biến động thất thường.'
+  },
+  {
+    pair: 'AUD/JPY',
+    drivers: 'Risk sentiment proxy, carry appetite, yield differential.',
+    preferredEvents: 'RBA, BoJ (và các ngày risk-on/off).',
+    bestUse: 'Trend-follow khi risk regime ổn định và không có headline shock.',
+    avoidWhen: 'Tin địa chính trị / risk shock làm JPY bật cực nhanh.'
+  },
 ];
 
 function clamp(value: number, min: number, max: number) {

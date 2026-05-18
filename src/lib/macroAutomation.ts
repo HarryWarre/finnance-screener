@@ -15,6 +15,12 @@ export const FOREX_PAIR_TICKERS: Record<MacroPair, string> = {
   'GBP/USD': 'GBPUSD=X',
   'USD/JPY': 'USDJPY=X',
   'AUD/USD': 'AUDUSD=X',
+  'EUR/GBP': 'EURGBP=X',
+  'EUR/JPY': 'EURJPY=X',
+  'EUR/AUD': 'EURAUD=X',
+  'GBP/JPY': 'GBPJPY=X',
+  'GBP/AUD': 'GBPAUD=X',
+  'AUD/JPY': 'AUDJPY=X',
 };
 
 export interface NormalizedMacroEvent {

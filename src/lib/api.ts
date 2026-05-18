@@ -53,6 +53,26 @@ export interface MacroTrendSnapshot {
 
 const PROXY_URL = 'proxy.php'; // relative path — works in any subfolder on cPanel
 
+const MAX_PARALLEL_PROXY_REQUESTS = 4;
+let activeProxyRequests = 0;
+const proxyRequestQueue: Array<() => void> = [];
+
+async function runWithProxyConcurrencyLimit<T>(task: () => Promise<T>): Promise<T> {
+  if (activeProxyRequests >= MAX_PARALLEL_PROXY_REQUESTS) {
+    await new Promise<void>((resolve) => proxyRequestQueue.push(resolve));
+  }
+  activeProxyRequests += 1;
+  try {
+    return await task();
+  } finally {
+    activeProxyRequests -= 1;
+    const next = proxyRequestQueue.shift();
+    if (next) next();
+  }
+}
+
+const proxyTextMemo = new Map<string, Promise<string>>();
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
@@ -341,10 +361,17 @@ type MacroActualCatalog = {
   boe: MacroActualSnapshot | null;
 };
 
-type FredPoint = {
-  date: string;
-  value: number;
-};
+function emptyMacroActualCatalog(): MacroActualCatalog {
+  return {
+    usCpiYoy: null,
+    usCpiMom: null,
+    usNfp: null,
+    usRetail: null,
+    fomc: null,
+    ecb: null,
+    boe: null,
+  };
+}
 
 function normalizeMacroText(value: string) {
   return value.replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
@@ -522,21 +549,31 @@ function getEventPriority(title: string, eventId: string) {
   return 1;
 }
 
-async function fetchTextViaProxy(url: string, timeoutMs = 12000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${PROXY_URL}?action=rss&url=${encodeURIComponent(url)}`, {
-      signal: controller.signal,
-    });
-    const text = await res.text();
-    if (!res.ok) {
-      throw new Error(text || `HTTP ${res.status}`);
+async function fetchTextViaProxy(url: string, timeoutMs = 35000) {
+  const key = `${url}::${timeoutMs}`;
+  const cached = proxyTextMemo.get(key);
+  if (cached) return cached;
+
+  const promise = runWithProxyConcurrencyLimit(async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${PROXY_URL}?action=rss&url=${encodeURIComponent(url)}`, {
+        signal: controller.signal,
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      return text;
+    } finally {
+      clearTimeout(timer);
     }
-    return text;
-  } finally {
-    clearTimeout(timer);
-  }
+  });
+
+  proxyTextMemo.set(key, promise);
+  promise.catch(() => proxyTextMemo.delete(key));
+  return promise;
 }
 
 function parseForexFactoryJson(text: string): FreeMacroCalendarEntry[] {
@@ -620,53 +657,17 @@ async function fetchForexFactoryCalendar() {
   const csvUrl = 'https://nfs.faireconomy.media/ff_calendar_thisweek.csv';
 
   try {
-    const text = await fetchTextViaProxy(jsonUrl, 10000);
-    return { events: parseForexFactoryJson(text), source: 'forexfactory_json' };
-  } catch (jsonError) {
-    const csvText = await fetchTextViaProxy(csvUrl, 10000).catch(() => {
-      throw jsonError;
-    });
+    // CSV endpoint is typically more reliable than JSON (the JSON one is rate-limited more aggressively).
+    const csvText = await fetchTextViaProxy(csvUrl, 12000);
     return { events: parseForexFactoryCsv(csvText), source: 'forexfactory_csv' };
+  } catch (csvError) {
+    const text = await fetchTextViaProxy(jsonUrl, 12000).catch(() => {
+      throw csvError;
+    });
+    return { events: parseForexFactoryJson(text), source: 'forexfactory_json' };
   }
 }
 
-async function fetchFredSeries(seriesId: string, minPoints = 2): Promise<FredPoint[]> {
-  const text = await fetchTextViaProxy(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(seriesId)}`, 12000);
-  const lines = text.trim().split(/\r?\n/).slice(1);
-  const points = lines
-    .map((line) => {
-      const [date, valueText] = line.split(',');
-      const value = Number(valueText);
-      if (!date || !Number.isFinite(value)) return null;
-      return { date: date.trim(), value };
-    })
-    .filter((point): point is FredPoint => point !== null);
-
-  if (points.length < minPoints) {
-    throw new Error(`FRED series ${seriesId} has insufficient points`);
-  }
-
-  return points;
-}
-
-function formatPercent(value: number, digits = 1) {
-  const formatted = value.toFixed(digits);
-  return `${formatted.replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1')}%`;
-}
-
-function formatRate(value: number, digits = 2) {
-  const formatted = value.toFixed(digits);
-  return `${formatted.replace(/\.00$/, '').replace(/(\.\d*[1-9])0+$/, '$1')}%`;
-}
-
-function formatThousandsChange(value: number) {
-  const rounded = Math.round(value);
-  return `${rounded}K`;
-}
-
-function getLatestPoints(points: FredPoint[], count: number) {
-  return points.slice(-count);
-}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -677,15 +678,6 @@ function formatSigned(value: number, digits = 2) {
   return `${sign}${value.toFixed(digits).replace(/\.00$/, '').replace(/(\.\d*[1-9])0+$/, '$1')}`;
 }
 
-function monthlyPercentChange(current: number, previous: number) {
-  if (previous === 0) return 0;
-  return ((current / previous) - 1) * 100;
-}
-
-function annualPercentChange(current: number, previous: number) {
-  if (previous === 0) return 0;
-  return ((current / previous) - 1) * 100;
-}
 
 function scoreToBias(score: number): MacroTrendBias {
   if (score >= 2) return 'bullish';
@@ -697,226 +689,6 @@ function summariseBias(currency: CurrencyMacroTrend['currency'], bias: MacroTren
   if (bias === 'bullish') return `${currency} nghiêng mạnh hơn ${detail}`;
   if (bias === 'bearish') return `${currency} nghiêng yếu hơn ${detail}`;
   return `${currency} đang ở trạng thái cân bằng hơn ${detail}`;
-}
-
-function buildUsdTrend(
-  cpiSeries: FredPoint[],
-  payemsSeries: FredPoint[],
-  retailSeries: FredPoint[],
-  fedSeries: FredPoint[],
-): CurrencyMacroTrend {
-  const signals: string[] = [];
-  let score = 0;
-
-  const currentCpi = cpiSeries.at(-1)?.value ?? 0;
-  const cpiPrevMonth = cpiSeries.at(-2)?.value ?? currentCpi;
-  const cpiYearAgo = cpiSeries.at(-13)?.value ?? currentCpi;
-  const cpiThreeMonthsAgo = cpiSeries.at(-4)?.value ?? currentCpi;
-  const cpiFifteenMonthsAgo = cpiSeries.at(-16)?.value ?? cpiThreeMonthsAgo;
-
-  const cpiYoyNow = annualPercentChange(currentCpi, cpiYearAgo);
-  const cpiYoyThreeMonthsAgo = annualPercentChange(cpiThreeMonthsAgo, cpiFifteenMonthsAgo);
-  const cpiMomNow = monthlyPercentChange(currentCpi, cpiPrevMonth);
-
-  if (cpiYoyNow > cpiYoyThreeMonthsAgo + 0.2) {
-    score += 2;
-    signals.push(`Lạm phát Mỹ tăng lại: CPI y/y từ ${formatPercent(cpiYoyThreeMonthsAgo, 1)} lên ${formatPercent(cpiYoyNow, 1)}.`);
-  } else if (cpiYoyNow < cpiYoyThreeMonthsAgo - 0.2) {
-    score -= 2;
-    signals.push(`Lạm phát Mỹ hạ nhiệt: CPI y/y từ ${formatPercent(cpiYoyThreeMonthsAgo, 1)} xuống ${formatPercent(cpiYoyNow, 1)}.`);
-  } else {
-    signals.push(`CPI Mỹ khá ổn định ở ${formatPercent(cpiYoyNow, 1)}; nhịp tháng gần nhất là ${formatPercent(cpiMomNow, 1)}.`);
-  }
-
-  const payrollChanges = payemsSeries.slice(-6).map((_, index, array) => {
-    if (index === 0) return null;
-    return array[index].value - array[index - 1].value;
-  }).filter((value): value is number => value !== null);
-  const lastPayroll = payrollChanges.at(-1) ?? 0;
-  const payrollAvg = payrollChanges.length ? payrollChanges.reduce((sum, value) => sum + value, 0) / payrollChanges.length : 0;
-  if (lastPayroll >= 150) {
-    score += 1;
-    signals.push(`Việc làm Mỹ còn chắc: NFP proxy tháng gần nhất khoảng ${formatThousandsChange(lastPayroll)}; trung bình 5 tháng là ${formatThousandsChange(payrollAvg)}.`);
-  } else if (lastPayroll <= 60) {
-    score -= 1;
-    signals.push(`Việc làm Mỹ chậm lại: NFP proxy tháng gần nhất chỉ khoảng ${formatThousandsChange(lastPayroll)}.`);
-  } else {
-    signals.push(`NFP proxy trung tính: thay đổi tháng gần nhất khoảng ${formatThousandsChange(lastPayroll)}.`);
-  }
-
-  const retailLast = retailSeries.at(-1)?.value ?? 0;
-  const retailPrev = retailSeries.at(-2)?.value ?? retailLast;
-  const retailMom = monthlyPercentChange(retailLast, retailPrev);
-  if (retailMom >= 0.5) {
-    score += 1;
-    signals.push(`Tiêu dùng Mỹ vẫn khoẻ: retail control group m/m là ${formatPercent(retailMom, 1)}.`);
-  } else if (retailMom <= -0.2) {
-    score -= 1;
-    signals.push(`Retail sales dịu đi: control group m/m là ${formatPercent(retailMom, 1)}.`);
-  } else {
-    signals.push(`Retail sales khá trung tính ở ${formatPercent(retailMom, 1)} m/m.`);
-  }
-
-  const fedNow = fedSeries.at(-1)?.value ?? 0;
-  const fedBack = fedSeries.at(-90)?.value ?? fedNow;
-  if (fedNow > fedBack + 0.1) {
-    score += 2;
-    signals.push(`Fed vẫn đang thắt chặt hơn 3 tháng trước: upper bound ${formatRate(fedNow, 2)} (${formatSigned(fedNow - fedBack, 2)} điểm).`);
-  } else if (fedNow < fedBack - 0.1) {
-    score -= 2;
-    signals.push(`Fed đã nới hơn 3 tháng trước: upper bound ${formatRate(fedNow, 2)} (${formatSigned(fedNow - fedBack, 2)} điểm).`);
-  } else {
-    signals.push(`Fed đang giữ upper bound quanh ${formatRate(fedNow, 2)}.`);
-  }
-
-  const bias = scoreToBias(score);
-  return {
-    currency: 'USD',
-    bias,
-    score,
-    headline: summariseBias('USD', bias, 'nhờ mix lạm phát, tăng trưởng và kỳ vọng Fed'),
-    signals,
-    updated: [cpiSeries.at(-1)?.date, payemsSeries.at(-1)?.date, retailSeries.at(-1)?.date, fedSeries.at(-1)?.date].filter(Boolean).join(' · '),
-    sourceUrls: [
-      'https://fred.stlouisfed.org/series/CPIAUCSL',
-      'https://fred.stlouisfed.org/series/PAYEMS',
-      'https://fred.stlouisfed.org/series/RSXFS',
-      'https://fred.stlouisfed.org/series/DFEDTARU',
-    ],
-  };
-}
-
-function buildRateProxyTrend(args: {
-  currency: CurrencyMacroTrend['currency'];
-  latestSeries: FredPoint[];
-  latestRateLabel: string;
-  sourceUrl: string;
-  compareMonthsBack?: number;
-  latestRateFromFeed?: string | null;
-  extraSignal?: string | null;
-}) {
-  const { currency, latestSeries, latestRateLabel, sourceUrl, compareMonthsBack = 3, latestRateFromFeed = null, extraSignal = null } = args;
-  const signals: string[] = [];
-  const latest = latestSeries.at(-1)?.value ?? 0;
-  const previous = latestSeries.at(-(compareMonthsBack + 1))?.value ?? latestSeries[0]?.value ?? latest;
-  const delta = latest - previous;
-
-  let score = 0;
-  if (delta >= 0.15) {
-    score += 2;
-    signals.push(`${latestRateLabel} tăng từ ${formatRate(previous, 2)} lên ${formatRate(latest, 2)} trong khoảng ${compareMonthsBack} tháng.`);
-  } else if (delta <= -0.15) {
-    score -= 2;
-    signals.push(`${latestRateLabel} giảm từ ${formatRate(previous, 2)} xuống ${formatRate(latest, 2)} trong khoảng ${compareMonthsBack} tháng.`);
-  } else {
-    signals.push(`${latestRateLabel} khá đi ngang quanh ${formatRate(latest, 2)}.`);
-  }
-
-  if (latestRateFromFeed) {
-    signals.push(`Quyết định/policy rate gần nhất đọc được là ${latestRateFromFeed}.`);
-  }
-
-  if (extraSignal) {
-    signals.push(extraSignal);
-  }
-
-  const bias = scoreToBias(score);
-  return {
-    currency,
-    bias,
-    score,
-    headline: summariseBias(currency, bias, 'theo proxy lãi suất và pricing ngắn hạn'),
-    signals,
-    updated: latestSeries.at(-1)?.date ?? '',
-    sourceUrls: [sourceUrl],
-  } satisfies CurrencyMacroTrend;
-}
-
-async function buildMacroActualCatalog(): Promise<MacroActualCatalog> {
-  const [cpiSeries, payemsSeries, retailSeries, fomcSeries, ecbSeries, boeFeed] = await Promise.all([
-    fetchFredSeries('CPIAUCSL', 13),
-    fetchFredSeries('PAYEMS', 2),
-    fetchFredSeries('RSXFS', 2),
-    fetchFredSeries('DFEDTARU', 2),
-    fetchFredSeries('ECBDFR', 2),
-    fetchTextViaProxy('https://www.bankofengland.co.uk/rss/news', 12000).catch(() => ''),
-  ]);
-
-  const latestCpi = getLatestPoints(cpiSeries, 13);
-  const currentCpi = latestCpi.at(-1)?.value ?? null;
-  const previousCpi = latestCpi.at(-2)?.value ?? null;
-  const yearAgoCpi = latestCpi.at(-13)?.value ?? null;
-
-  const usCpiMom =
-    currentCpi != null && previousCpi != null
-      ? {
-          actualText: formatPercent(((currentCpi / previousCpi) - 1) * 100, 1),
-          sourceUrl: 'https://fred.stlouisfed.org/series/CPIAUCSL',
-        }
-      : null;
-
-  const usCpiYoy =
-    currentCpi != null && yearAgoCpi != null
-      ? {
-          actualText: formatPercent(((currentCpi / yearAgoCpi) - 1) * 100, 1),
-          sourceUrl: 'https://fred.stlouisfed.org/series/CPIAUCSL',
-        }
-      : null;
-
-  const payemsLatest = getLatestPoints(payemsSeries, 2);
-  const usNfp =
-    payemsLatest.length >= 2
-      ? {
-          actualText: formatThousandsChange(payemsLatest[1].value - payemsLatest[0].value),
-          sourceUrl: 'https://fred.stlouisfed.org/series/PAYEMS',
-        }
-      : null;
-
-  const retailLatest = getLatestPoints(retailSeries, 2);
-  const usRetail =
-    retailLatest.length >= 2 && retailLatest[0].value !== 0
-      ? {
-          actualText: formatPercent(((retailLatest[1].value / retailLatest[0].value) - 1) * 100, 1),
-          sourceUrl: 'https://fred.stlouisfed.org/series/RSXFS',
-        }
-      : null;
-
-  const fomcLatest = fomcSeries.at(-1)?.value;
-  const fomc = fomcLatest != null
-    ? {
-        actualText: formatRate(fomcLatest, 2),
-        sourceUrl: 'https://fred.stlouisfed.org/series/DFEDTARU',
-      }
-    : null;
-
-  const ecbLatest = ecbSeries.at(-1)?.value;
-  const ecb = ecbLatest != null
-    ? {
-        actualText: formatRate(ecbLatest, 2),
-        sourceUrl: 'https://fred.stlouisfed.org/series/ECBDFR',
-      }
-    : null;
-
-  let boe: MacroActualSnapshot | null = null;
-  if (boeFeed) {
-    const parser = new DOMParser();
-    const xml = parser.parseFromString(boeFeed, 'application/xml');
-    const items = Array.from(xml.querySelectorAll('item'));
-    for (const item of items) {
-      const title = normalizeMacroText(item.querySelector('title')?.textContent ?? '');
-      const match = title.match(/Bank Rate .*?(\d+(?:\.\d+)?)%/i);
-      if (!match) continue;
-
-      const link = normalizeMacroText(item.querySelector('link')?.textContent ?? '');
-      boe = {
-        actualText: formatRate(Number(match[1]), 2),
-        sourceUrl: link || 'https://www.bankofengland.co.uk/rss/news',
-      };
-      break;
-    }
-  }
-
-  return { usCpiYoy, usCpiMom, usNfp, usRetail, fomc, ecb, boe };
 }
 
 function getActualSnapshotForEntry(entry: FreeMacroCalendarEntry, catalog: MacroActualCatalog): MacroActualSnapshot | null {
@@ -1051,10 +823,9 @@ function writeMacroTrendCache(data: MacroTrendSnapshot) {
 
 export async function fetchMacroCalendar(): Promise<MacroCalendarResponse> {
   try {
-    const [{ events, source }, actualCatalog] = await Promise.all([
-      fetchForexFactoryCalendar(),
-      buildMacroActualCatalog(),
-    ]);
+    // Hosting-friendly mode: avoid FRED/BoE fetches (often blocked/slow on shared hosting).
+    const { events, source } = await fetchForexFactoryCalendar();
+    const actualCatalog = emptyMacroActualCatalog();
 
     const response = buildMacroCalendarResponse(events, actualCatalog, `${source}+fred+boe`);
     writeMacroCalendarCache(response);
@@ -1069,58 +840,124 @@ export async function fetchMacroCalendar(): Promise<MacroCalendarResponse> {
     }
 
     const message = error instanceof Error ? error.message : 'Macro calendar fetch failed';
-    throw new Error(`Không lấy được calendar free mode. ${message}`);
+    throw new Error(`Không lấy được calendar free mode. ${message}`, { cause: error });
   }
 }
 
 export async function fetchMacroTrendSnapshot(): Promise<MacroTrendSnapshot> {
   try {
-    const [cpiSeries, payemsSeries, retailSeries, fedSeries, ecbSeries, ukRateSeries, jpRateSeries, auRateSeries, actualCatalog] = await Promise.all([
-      fetchFredSeries('CPIAUCSL', 16),
-      fetchFredSeries('PAYEMS', 7),
-      fetchFredSeries('RSXFS', 4),
-      fetchFredSeries('DFEDTARU', 90),
-      fetchFredSeries('ECBDFR', 90),
-      fetchFredSeries('IR3TIB01GBM156N', 4),
-      fetchFredSeries('IR3TIB01JPM156N', 4),
-      fetchFredSeries('IR3TIB01AUM156N', 4),
-      buildMacroActualCatalog(),
+    const [dxy, us10y, spx, eurusd, gbpusd, usdjpy, audusd] = await Promise.all([
+      fetchChartData('DX-Y.NYB', '1d', '3mo'),
+      fetchChartData('^TNX', '1d', '3mo'),
+      fetchChartData('^GSPC', '1d', '3mo'),
+      fetchChartData('EURUSD=X', '1d', '3mo'),
+      fetchChartData('GBPUSD=X', '1d', '3mo'),
+      fetchChartData('USDJPY=X', '1d', '3mo'),
+      fetchChartData('AUDUSD=X', '1d', '3mo'),
     ]);
 
+    const pctChangeFrom = (series: OHLCV | null, pointsBack: number) => {
+      const closes = series?.close ?? [];
+      if (closes.length < pointsBack + 1) return null;
+      const start = closes.at(-(pointsBack + 1));
+      const end = closes.at(-1);
+      if (!start || !end || start === 0) return null;
+      return ((end / start) - 1) * 100;
+    };
+
+    const deltaFrom = (series: OHLCV | null, pointsBack: number) => {
+      const closes = series?.close ?? [];
+      if (closes.length < pointsBack + 1) return null;
+      const start = closes.at(-(pointsBack + 1));
+      const end = closes.at(-1);
+      if (start == null || end == null) return null;
+      return end - start;
+    };
+
+    const scoreFromPct = (pct: number) => {
+      if (pct >= 2.0) return 3;
+      if (pct >= 0.7) return 2;
+      if (pct <= -2.0) return -3;
+      if (pct <= -0.7) return -2;
+      return 0;
+    };
+
+    const scoreFromDeltaPp = (deltaPp: number) => {
+      if (deltaPp >= 0.30) return 2;
+      if (deltaPp >= 0.10) return 1;
+      if (deltaPp <= -0.30) return -2;
+      if (deltaPp <= -0.10) return -1;
+      return 0;
+    };
+
+    const dxyPct = pctChangeFrom(dxy, 21);
+    const spxPct = pctChangeFrom(spx, 21);
+    const tnxDelta = deltaFrom(us10y, 21);
+    const tnxDeltaPp = tnxDelta == null ? null : tnxDelta / 10; // ^TNX is 10x yield
+
+    const usdSignals: string[] = [];
+    let usdScore = 0;
+    if (dxyPct != null) {
+      usdScore += scoreFromPct(dxyPct);
+      usdSignals.push(`DXY 1M: ${formatSigned(dxyPct, 2)}%.`);
+    } else {
+      usdSignals.push('DXY 1M: N/A.');
+    }
+    if (tnxDeltaPp != null) {
+      usdScore += scoreFromDeltaPp(tnxDeltaPp);
+      usdSignals.push(`US10Y (proxy ^TNX) 1M: ${formatSigned(tnxDeltaPp, 2)} điểm %.`);
+    } else {
+      usdSignals.push('US10Y 1M: N/A.');
+    }
+    if (spxPct != null) {
+      // Risk-off tends to support USD.
+      usdScore += spxPct <= -1.0 ? 1 : spxPct >= 1.0 ? -1 : 0;
+      usdSignals.push(`S&P500 1M: ${formatSigned(spxPct, 2)}%.`);
+    }
+
+    const usdBias = scoreToBias(usdScore);
+    const usdTrend: CurrencyMacroTrend = {
+      currency: 'USD',
+      bias: usdBias,
+      score: clamp(usdScore, -6, 6),
+      headline: summariseBias('USD', usdBias, 'dựa trên DXY, US10Y và risk-on/off'),
+      signals: usdSignals,
+      updated: new Date().toISOString().slice(0, 10),
+      sourceUrls: [
+        'https://finance.yahoo.com/quote/DX-Y.NYB/',
+        'https://finance.yahoo.com/quote/%5ETNX/',
+        'https://finance.yahoo.com/quote/%5EGSPC/',
+      ],
+    };
+
+    const fxTrend = (currency: CurrencyMacroTrend['currency'], symbol: string, invert = false): CurrencyMacroTrend => {
+      const pct = pctChangeFrom(symbol === 'EURUSD=X' ? eurusd : symbol === 'GBPUSD=X' ? gbpusd : symbol === 'USDJPY=X' ? usdjpy : audusd, 21);
+      const signedPct = pct == null ? null : (invert ? -pct : pct);
+      const score = signedPct == null ? 0 : scoreFromPct(signedPct);
+      const bias = scoreToBias(score);
+      const label = invert ? `${symbol} (inverted)` : symbol;
+      const signals = [
+        `${label} 1M: ${signedPct == null ? 'N/A' : `${formatSigned(signedPct, 2)}%`}.`,
+        'Proxy theo động lượng FX (không phải CPI/NFP chính thức).',
+      ];
+      return {
+        currency,
+        bias,
+        score: clamp(score, -6, 6),
+        headline: summariseBias(currency, bias, 'theo động lượng tỷ giá so với USD'),
+        signals,
+        updated: new Date().toISOString().slice(0, 10),
+        sourceUrls: [`https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}/`],
+      };
+    };
+
     const trends: CurrencyMacroTrend[] = [
-      buildUsdTrend(cpiSeries, payemsSeries, retailSeries, fedSeries),
-      buildRateProxyTrend({
-        currency: 'EUR',
-        latestSeries: ecbSeries,
-        latestRateLabel: 'ECB deposit rate',
-        sourceUrl: 'https://fred.stlouisfed.org/series/ECBDFR',
-        latestRateFromFeed: actualCatalog.ecb?.actualText ?? null,
-      }),
-      buildRateProxyTrend({
-        currency: 'GBP',
-        latestSeries: ukRateSeries,
-        latestRateLabel: 'UK 3M interbank rate',
-        sourceUrl: 'https://fred.stlouisfed.org/series/IR3TIB01GBM156N',
-        latestRateFromFeed: actualCatalog.boe?.actualText ?? null,
-      }),
-      buildRateProxyTrend({
-        currency: 'JPY',
-        latestSeries: jpRateSeries,
-        latestRateLabel: 'Japan 3M interbank rate',
-        sourceUrl: 'https://fred.stlouisfed.org/series/IR3TIB01JPM156N',
-        extraSignal: 'Đây là proxy cho kỳ vọng chính sách BoJ, không phải policy rate trực tiếp.',
-      }),
-      buildRateProxyTrend({
-        currency: 'AUD',
-        latestSeries: auRateSeries,
-        latestRateLabel: 'Australia 3M interbank rate',
-        sourceUrl: 'https://fred.stlouisfed.org/series/IR3TIB01AUM156N',
-        extraSignal: 'Đây là proxy cho pricing ngắn hạn của AUD khi chưa có nguồn RBA free ổn định.',
-      }),
-    ].map((trend) => ({
-      ...trend,
-      score: clamp(trend.score, -6, 6),
-    }));
+      usdTrend,
+      fxTrend('EUR', 'EURUSD=X', false),
+      fxTrend('GBP', 'GBPUSD=X', false),
+      fxTrend('JPY', 'USDJPY=X', true),
+      fxTrend('AUD', 'AUDUSD=X', false),
+    ];
 
     const snapshot = { trends };
     writeMacroTrendCache(snapshot);
@@ -1132,6 +969,6 @@ export async function fetchMacroTrendSnapshot(): Promise<MacroTrendSnapshot> {
     }
 
     const message = error instanceof Error ? error.message : 'Macro trend fetch failed';
-    throw new Error(`Không lấy được macro trend snapshot. ${message}`);
+    throw new Error(`Không lấy được macro trend snapshot. ${message}`, { cause: error });
   }
 }

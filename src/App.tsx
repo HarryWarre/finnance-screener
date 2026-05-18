@@ -15,6 +15,7 @@ import MacroInsights from './components/MacroInsights';
 import ForexCorrelation from './components/ForexCorrelation';
 import ForexStatsPanel from './components/ForexStatsPanel';
 import AgriDashboard from './components/AgriDashboard';
+import SmartMoneyFlowWindow from './components/SmartMoneyFlowWindow';
 
 // --- Types ---
 type Config = typeof DEFAULT_PARAMS & {
@@ -43,7 +44,7 @@ export default function App() {
   }, [config.useCustomSymbols, config.customSymbols, config.customSymbolsLimit]);
 
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'statarb' | 'macro' | 'correlation' | 'agri'>('statarb');
+  const [activeTab, setActiveTab] = useState<'statarb' | 'flow' | 'macro' | 'correlation' | 'agri'>('statarb');
   const [statarbMode, setStatarbMode] = useState<'stocks' | 'forex'>('stocks');
   
   // StatArb State
@@ -221,6 +222,12 @@ export default function App() {
           📊 StatArb Matrix
         </button>
         <button
+          className={clsx(styles.tabButton, activeTab === 'flow' && styles.tabButtonActive)}
+          onClick={() => setActiveTab('flow')}
+        >
+          💸 Smart Money Flow
+        </button>
+        <button
           className={clsx(styles.tabButton, activeTab === 'agri' && styles.tabButtonActive)}
           onClick={() => setActiveTab('agri')}
         >
@@ -241,6 +248,8 @@ export default function App() {
       </div>
 
       {activeTab === 'agri' && <AgriDashboard isActive />}
+
+      <SmartMoneyFlowWindow isActive={activeTab === 'flow'} />
 
       {activeTab === 'statarb' && (
         <>

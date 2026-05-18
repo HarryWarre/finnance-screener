@@ -28,21 +28,38 @@ $COT_MIRROR_BASE_URL = ''; // no trailing slash
 
 // Generic cURL fetcher
 function fetchUrl($url, $extraHeaders = []) {
+    if (!function_exists('curl_init')) {
+        return ['body' => null, 'code' => 0, 'error' => 'cURL extension is not enabled on this host'];
+    }
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
     curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    // Many upstream endpoints respond with gzip/br. Enable transparent decompression when supported.
+    curl_setopt($ch, CURLOPT_ENCODING, '');
+    // Shared hosting libcurl+HTTP/2 can be flaky for some upstreams (FRED/FF/etc).
+    // Force HTTP/1.1 to avoid errors like: "HTTP/2 stream ... INTERNAL_ERROR".
+    if (defined('CURL_HTTP_VERSION_1_1')) {
+        curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    }
+    // Some hosts have broken IPv6 routing; prefer IPv4 to avoid long stalls with 0 bytes received.
+    if (defined('CURL_IPRESOLVE_V4')) {
+        curl_setopt($ch, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+    }
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 20);
+    // Avoid hanging too long on slow upstreams; allow slightly longer than client AbortController.
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
     if (!empty($extraHeaders)) {
         curl_setopt($ch, CURLOPT_HTTPHEADER, $extraHeaders);
     }
     $result = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $info = curl_getinfo($ch);
     $error = curl_error($ch);
     curl_close($ch);
-    return ['body' => $result, 'code' => $httpCode, 'error' => $error];
+    return ['body' => $result, 'code' => $httpCode, 'error' => $error, 'info' => $info];
 }
 
 // Simple file-based cache (cPanel-friendly). Cache directory: public/cache/
@@ -70,11 +87,32 @@ function writeCache($key, $json) {
     @file_put_contents($path, $json);
 }
 
+function fetchUrlWithFallback($url, $extraHeaders = []) {
+    $res = fetchUrl($url, $extraHeaders);
+    if (($res['code'] == 200 && $res['body']) || ($res['code'] && $res['code'] != 0)) {
+        return $res;
+    }
+
+    // Fallback: some shared hosts cannot reach certain upstreams reliably. Try via a public fetch relay.
+    // This is best-effort and only used when the direct request fails with code=0 / network error.
+    $relay = "https://api.allorigins.win/raw?url=" . rawurlencode($url);
+    $relayHeaders = array_merge($extraHeaders, ['User-Agent: Mozilla/5.0', 'Accept: */*']);
+    $fallback = fetchUrl($relay, $relayHeaders);
+    // Annotate for debugging.
+    $fallback['fallback_via'] = 'allorigins';
+    $fallback['original_error'] = $res['error'] ?? null;
+    return $fallback;
+}
+
 function respondJson($obj, $statusCode = 200) {
     http_response_code($statusCode);
     header("Content-Type: application/json; charset=utf-8");
     echo json_encode($obj);
     exit();
+}
+
+function isDebugEnabled() {
+    return isset($_GET['debug']) && ($_GET['debug'] === '1' || strtolower($_GET['debug']) === 'true');
 }
 
 // ── chart: Yahoo Finance OHLCV ──────────────────────────────────────────────
@@ -411,14 +449,32 @@ if ($action === 'chart') {
         echo json_encode(["error" => "Missing url for rss action"]);
         exit();
     }
-    $res = fetchUrl($rssUrl, ['Accept: application/rss+xml, text/xml, */*']);
+    $res = fetchUrlWithFallback($rssUrl, ['Accept: application/rss+xml, text/xml, */*']);
     if ($res['code'] == 200 && $res['body']) {
         header("Content-Type: text/xml; charset=utf-8");
         echo $res['body'];
     } else {
         header("Content-Type: application/json");
         http_response_code(502);
-        echo json_encode(["error" => "RSS fetch failed", "code" => $res['code'], "curl_error" => $res['error']]);
+        $payload = ["error" => "RSS fetch failed", "code" => $res['code'], "curl_error" => $res['error']];
+        if (isset($res['fallback_via'])) $payload['fallback_via'] = $res['fallback_via'];
+        if (isset($res['original_error'])) $payload['original_error'] = $res['original_error'];
+        if (isDebugEnabled() && isset($res['info'])) {
+            $payload["url"] = $rssUrl;
+            // Return only safe/compact timing diagnostics.
+            $payload["timings"] = [
+                "namelookup_time" => $res['info']['namelookup_time'] ?? null,
+                "connect_time" => $res['info']['connect_time'] ?? null,
+                "appconnect_time" => $res['info']['appconnect_time'] ?? null,
+                "pretransfer_time" => $res['info']['pretransfer_time'] ?? null,
+                "starttransfer_time" => $res['info']['starttransfer_time'] ?? null,
+                "total_time" => $res['info']['total_time'] ?? null,
+                "primary_ip" => $res['info']['primary_ip'] ?? null,
+                "primary_port" => $res['info']['primary_port'] ?? null,
+                "http_version" => $res['info']['http_version'] ?? null,
+            ];
+        }
+        echo json_encode($payload);
     }
 
 // ── sp500: Fetch S&P 500 constituents from Wikipedia ────────────────────────

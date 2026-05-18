@@ -116,6 +116,7 @@ export default function MacroForexStrategy() {
       setLastUpdated(new Date().toLocaleString('vi-VN'));
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Không load được dữ liệu macro.';
+      console.error('[MacroForexStrategy] Free sources sync failed:', error);
       setAutoRecommendations([]);
       setUpcomingWatchlist([]);
       setMacroTrends([]);
