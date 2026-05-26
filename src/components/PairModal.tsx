@@ -13,13 +13,16 @@ export type PairResult = StatArbResult & {
 interface PairModalProps {
   pair: PairResult;
   prices: Record<string, number[]>;
+  labelMap?: Record<string, string>;
   onClose: () => void;
 }
 
-export default function PairModal({ pair, prices, onClose }: PairModalProps) {
+export default function PairModal({ pair, prices, labelMap, onClose }: PairModalProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const [volY, setVolY] = useState<string>('1');
   const [volX, setVolX] = useState<string>('');
+  const yLabel = labelMap?.[pair.y] ?? pair.y;
+  const xLabel = labelMap?.[pair.x] ?? pair.x;
 
   const beta = pair.beta;
   const invBeta = useMemo(() => (beta !== 0 ? 1 / beta : null), [beta]);
@@ -114,7 +117,7 @@ export default function PairModal({ pair, prices, onClose }: PairModalProps) {
         <button className={styles.closeButton} onClick={onClose}><X /></button>
         
         <div className={styles.modalHeader}>
-          <h2>{pair.y} <span style={{color: '#8b949e', fontSize: '1.2rem', margin: '0 10px'}}>vs</span> {pair.x}</h2>
+          <h2>{yLabel} <span style={{color: '#8b949e', fontSize: '1.2rem', margin: '0 10px'}}>vs</span> {xLabel}</h2>
         </div>
 
         <div className={styles.modalStats}>
@@ -140,18 +143,18 @@ export default function PairModal({ pair, prices, onClose }: PairModalProps) {
           <div className={styles.ratioHeader}>Quy đổi / Hedge ratio</div>
           <div className={styles.ratioLines}>
             <div className={styles.ratioLine}>
-              1 {pair.y} ≈ {beta.toFixed(3)} {pair.x}
+              1 {yLabel} ≈ {beta.toFixed(3)} {xLabel}
             </div>
             {invBeta !== null && (
               <div className={styles.ratioLine}>
-                1 {pair.x} ≈ {invBeta.toFixed(3)} {pair.y}
+                1 {xLabel} ≈ {invBeta.toFixed(3)} {yLabel}
               </div>
             )}
           </div>
 
           <div className={styles.ratioInputs}>
             <div className={styles.ratioInputGroup}>
-              <label className={styles.ratioLabel}>Vol {pair.y}</label>
+              <label className={styles.ratioLabel}>Vol {yLabel}</label>
               <input
                 className={styles.ratioInput}
                 inputMode="decimal"
@@ -171,7 +174,7 @@ export default function PairModal({ pair, prices, onClose }: PairModalProps) {
               />
             </div>
             <div className={styles.ratioInputGroup}>
-              <label className={styles.ratioLabel}>Vol {pair.x}</label>
+              <label className={styles.ratioLabel}>Vol {xLabel}</label>
               <input
                 className={styles.ratioInput}
                 inputMode="decimal"
@@ -198,7 +201,7 @@ export default function PairModal({ pair, prices, onClose }: PairModalProps) {
         </div>
 
         <div>
-          <h3 style={{marginTop: 0, fontSize: '1rem', color: '#8b949e'}}>Spread = {pair.y} - {pair.beta.toFixed(3)} * {pair.x}</h3>
+          <h3 style={{marginTop: 0, fontSize: '1rem', color: '#8b949e'}}>Spread = {yLabel} - {pair.beta.toFixed(3)} * {xLabel}</h3>
           <div ref={chartContainerRef} className={styles.chartContainer} />
         </div>
       </motion.div>

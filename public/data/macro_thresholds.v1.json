@@ -1,0 +1,17 @@
+{
+  "version": "v1",
+  "generatedAt": "2026-05-26T00:00:00.000Z",
+  "windowYears": 2,
+  "minSamples": 30,
+  "method": "p70_abs_raw",
+  "familyDefaults": {
+    "Policy": 0.25,
+    "Inflation": 0.1,
+    "Labor": 20000,
+    "Growth": 0.3,
+    "Survey": 1.0,
+    "Demand": 0.3
+  },
+  "seriesStats": {}
+}
+

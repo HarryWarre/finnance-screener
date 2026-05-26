@@ -62,6 +62,44 @@ function fetchUrl($url, $extraHeaders = []) {
     return ['body' => $result, 'code' => $httpCode, 'error' => $error, 'info' => $info];
 }
 
+// cURL fetcher with a persistent cookie jar (for Cloudflare/session gated endpoints).
+function fetchUrlWithCookieJar($url, $cookieJarPath, $extraHeaders = [], $postFields = null) {
+    if (!function_exists('curl_init')) {
+        return ['body' => null, 'code' => 0, 'error' => 'cURL extension is not enabled on this host'];
+    }
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_ENCODING, '');
+    if (defined('CURL_HTTP_VERSION_1_1')) {
+        curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    }
+    if (defined('CURL_IPRESOLVE_V4')) {
+        curl_setopt($ch, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+    }
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    // Cookie jar
+    curl_setopt($ch, CURLOPT_COOKIEJAR, $cookieJarPath);
+    curl_setopt($ch, CURLOPT_COOKIEFILE, $cookieJarPath);
+    if ($postFields !== null) {
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
+    }
+    if (!empty($extraHeaders)) {
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $extraHeaders);
+    }
+    $result = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $info = curl_getinfo($ch);
+    $error = curl_error($ch);
+    curl_close($ch);
+    return ['body' => $result, 'code' => $httpCode, 'error' => $error, 'info' => $info];
+}
+
 // Simple file-based cache (cPanel-friendly). Cache directory: public/cache/
 function cachePath($key) {
     $safe = preg_replace('/[^a-zA-Z0-9_\\-\\.]/', '_', $key);
@@ -115,6 +153,495 @@ function isDebugEnabled() {
     return isset($_GET['debug']) && ($_GET['debug'] === '1' || strtolower($_GET['debug']) === 'true');
 }
 
+function readDotEnvKey($key) {
+    $k = strtoupper(trim($key));
+    // Prefer environment variables if available.
+    $env = getenv($k);
+    if ($env !== false && $env !== null && trim($env) !== '') return trim($env);
+    if (isset($_ENV[$k]) && trim(strval($_ENV[$k])) !== '') return trim(strval($_ENV[$k]));
+
+    // Best-effort: read from project root .env (useful on shared hosting).
+    $rootEnvPath = dirname(__DIR__) . "/.env";
+    if (!file_exists($rootEnvPath)) return '';
+    $raw = @file_get_contents($rootEnvPath);
+    if ($raw === false || $raw === '') return '';
+    $lines = preg_split("/\\r?\\n/", $raw);
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '' || strpos($line, '#') === 0) continue;
+        $pos = strpos($line, '=');
+        if ($pos === false) continue;
+        $lk = strtoupper(trim(substr($line, 0, $pos)));
+        if ($lk !== $k) continue;
+        $val = trim(substr($line, $pos + 1));
+        $val = trim($val, " \t\n\r\0\x0B\"'");
+        return $val;
+    }
+    return '';
+}
+
+// ── health: basic endpoint health check ─────────────────────────────────────
+if ($action === 'health') {
+    header("Content-Type: application/json; charset=utf-8");
+    echo json_encode([
+        "ok" => true,
+        "ts" => time(),
+        "php" => PHP_VERSION,
+        "curl" => function_exists('curl_init'),
+    ]);
+    exit();
+}
+
+// ── te_calendar: Economic calendar via TradingEconomics API (JSON) ──────────
+if ($action === 'te_calendar') {
+    header("Content-Type: application/json; charset=utf-8");
+
+    $dateFrom = isset($_GET['dateFrom']) ? trim($_GET['dateFrom']) : '';
+    $dateTo = isset($_GET['dateTo']) ? trim($_GET['dateTo']) : '';
+    $importance = isset($_GET['importance']) ? trim($_GET['importance']) : ''; // optional
+    if ($dateFrom === '' || $dateTo === '') respondJson(["error" => "Missing dateFrom/dateTo"], 400);
+    if (!preg_match('/^\\d{4}-\\d{2}-\\d{2}$/', $dateFrom) || !preg_match('/^\\d{4}-\\d{2}-\\d{2}$/', $dateTo)) {
+        respondJson(["error" => "Invalid dateFrom/dateTo format. Use YYYY-MM-DD."], 400);
+    }
+
+    $apiKey = readDotEnvKey("TE_API_KEY");
+    if ($apiKey === '') {
+        respondJson(["error" => "Missing TE_API_KEY on server (env or .env)."], 401);
+    }
+
+    // Only request countries that map into our supported macro universe.
+    $countries = "united%20states,euro%20area,united%20kingdom,japan,switzerland,canada,australia,new%20zealand,china,hong%20kong";
+    $url = "https://api.tradingeconomics.com/calendar/country/" . $countries . "/" . rawurlencode($dateFrom) . "/" . rawurlencode($dateTo) . "?c=" . rawurlencode($apiKey) . "&f=json";
+    if ($importance !== '' && preg_match('/^[0-3]$/', $importance)) {
+        $url .= "&importance=" . rawurlencode($importance);
+    }
+
+    $ttl = 15 * 60; // 15 minutes
+    $cacheKey = "te_calendar_" . $dateFrom . "_" . $dateTo . "_imp" . ($importance !== '' ? $importance : 'all');
+    $cached = readCache($cacheKey, $ttl);
+    if ($cached !== null) {
+        echo $cached;
+        exit();
+    }
+
+    $res = fetchUrlWithFallback($url, ['Accept: application/json']);
+    if (!($res['code'] == 200 && $res['body'])) {
+        respondJson(["error" => "TradingEconomics calendar failed", "code" => $res['code'], "detail" => $res['error']], 502);
+    }
+
+    // Pass through, but normalize to our proxy response shape.
+    $json = json_decode($res['body'], true);
+    if (!is_array($json)) {
+        respondJson(["error" => "TradingEconomics calendar invalid JSON"], 502);
+    }
+
+    $out = json_encode([
+        "dateFrom" => $dateFrom,
+        "dateTo" => $dateTo,
+        "events" => $json,
+        "source" => "tradingeconomics_api",
+    ]);
+    writeCache($cacheKey, $out);
+    echo $out;
+    exit();
+}
+
+// ── finnhub_calendar: Economic calendar via Finnhub (JSON) ──────────────────
+if ($action === 'finnhub_calendar') {
+    header("Content-Type: application/json; charset=utf-8");
+
+    $dateFrom = isset($_GET['dateFrom']) ? trim($_GET['dateFrom']) : '';
+    $dateTo = isset($_GET['dateTo']) ? trim($_GET['dateTo']) : '';
+    if ($dateFrom === '' || $dateTo === '') respondJson(["error" => "Missing dateFrom/dateTo"], 400);
+    if (!preg_match('/^\\d{4}-\\d{2}-\\d{2}$/', $dateFrom) || !preg_match('/^\\d{4}-\\d{2}-\\d{2}$/', $dateTo)) {
+        respondJson(["error" => "Invalid dateFrom/dateTo format. Use YYYY-MM-DD."], 400);
+    }
+
+    $apiKey = readDotEnvKey("FINNHUB_API_KEY");
+    if ($apiKey === '') {
+        respondJson(["error" => "Missing FINNHUB_API_KEY on server (env or .env)."], 401);
+    }
+
+    $ttl = 15 * 60; // 15 minutes
+    $cacheKey = "finnhub_calendar_" . $dateFrom . "_" . $dateTo;
+    $cached = readCache($cacheKey, $ttl);
+    if ($cached !== null) {
+        echo $cached;
+        exit();
+    }
+
+    $url = "https://finnhub.io/api/v1/calendar/economic?from=" . rawurlencode($dateFrom) . "&to=" . rawurlencode($dateTo) . "&token=" . rawurlencode($apiKey);
+    $res = fetchUrlWithFallback($url, ['Accept: application/json']);
+    if (!($res['code'] == 200 && $res['body'])) {
+        respondJson(["error" => "Finnhub calendar failed", "code" => $res['code'], "detail" => $res['error']], 502);
+    }
+
+    $json = json_decode($res['body'], true);
+    if (!is_array($json)) {
+        respondJson(["error" => "Finnhub calendar invalid JSON"], 502);
+    }
+
+    $events = [];
+    if (isset($json['economicCalendar']) && is_array($json['economicCalendar'])) {
+        $events = $json['economicCalendar'];
+    }
+
+    $out = json_encode([
+        "dateFrom" => $dateFrom,
+        "dateTo" => $dateTo,
+        "events" => $events,
+        "source" => "finnhub_calendar",
+    ]);
+    writeCache($cacheKey, $out);
+    echo $out;
+    exit();
+}
+
+// ── fxstreet_calendar: Economic calendar via FXStreet API (OAuth2 v2) ───────
+if ($action === 'fxstreet_calendar') {
+    header("Content-Type: application/json; charset=utf-8");
+
+    $dateFrom = isset($_GET['dateFrom']) ? trim($_GET['dateFrom']) : '';
+    $dateTo = isset($_GET['dateTo']) ? trim($_GET['dateTo']) : '';
+    $culture = isset($_GET['culture']) ? trim($_GET['culture']) : 'en';
+    $apiVersion = isset($_GET['apiVersion']) ? trim($_GET['apiVersion']) : 'v1';
+    $countriesRaw = isset($_GET['countries']) ? trim($_GET['countries']) : 'US,EMU,UK,JP,CH,CA,AU,NZ,CN,HK';
+
+    if ($dateFrom === '' || $dateTo === '') respondJson(["error" => "Missing dateFrom/dateTo"], 400);
+    if (!preg_match('/^\\d{4}-\\d{2}-\\d{2}$/', $dateFrom) || !preg_match('/^\\d{4}-\\d{2}-\\d{2}$/', $dateTo)) {
+        respondJson(["error" => "Invalid dateFrom/dateTo format. Use YYYY-MM-DD."], 400);
+    }
+    if (!preg_match('/^[a-z]{2,10}$/i', $culture)) $culture = 'en';
+    if (!preg_match('/^v\\d+$/i', $apiVersion)) $apiVersion = 'v1';
+
+    $clientId = readDotEnvKey("FXS_CLIENT_ID");
+    $clientSecret = readDotEnvKey("FXS_CLIENT_SECRET");
+    if ($clientId === '' || $clientSecret === '') {
+        respondJson(["error" => "Missing FXS_CLIENT_ID/FXS_CLIENT_SECRET on server (env or .env)."], 401);
+    }
+
+    // Token cache (separate from generic cache TTL)
+    $tokenCacheKey = "fxstreet_oauth2_v2_token_calendar";
+    $tokenRaw = readCache($tokenCacheKey, 23 * 60 * 60); // best-effort (token is typically long-lived)
+    $token = '';
+    $tokenType = 'Bearer';
+    $tokenExpiresAt = 0;
+    if ($tokenRaw !== null) {
+        $cached = json_decode($tokenRaw, true);
+        if (is_array($cached) && isset($cached['access_token']) && isset($cached['expiresAt'])) {
+            $t = strval($cached['access_token']);
+            $expiresAt = intval($cached['expiresAt']);
+            if ($t !== '' && $expiresAt > time() + 60) {
+                $token = $t;
+                $tokenType = isset($cached['token_type']) ? strval($cached['token_type']) : 'Bearer';
+                $tokenExpiresAt = $expiresAt;
+            }
+        }
+    }
+
+    if ($token === '') {
+        if (!is_dir(__DIR__ . "/cache")) {
+            @mkdir(__DIR__ . "/cache", 0755, true);
+        }
+        $cookieJar = __DIR__ . "/cache/fxstreet_cookiejar.txt";
+        $postFields = http_build_query([
+            "grant_type" => "client_credentials",
+            "client_id" => $clientId,
+            "client_secret" => $clientSecret,
+            "scope" => "calendar",
+        ]);
+        $tok = fetchUrlWithCookieJar(
+            "https://authorization.fxstreet.com/v2/token",
+            $cookieJar,
+            [
+                "Accept: application/json",
+                "Content-Type: application/x-www-form-urlencoded",
+            ],
+            $postFields
+        );
+        if (!($tok['code'] == 200 && $tok['body'])) {
+            respondJson(["error" => "FXStreet token fetch failed", "code" => $tok['code'], "detail" => $tok['error']], 502);
+        }
+        $tj = json_decode($tok['body'], true);
+        if (!is_array($tj) || !isset($tj['access_token'])) {
+            respondJson(["error" => "FXStreet token invalid JSON"], 502);
+        }
+        $token = strval($tj['access_token']);
+        $tokenType = isset($tj['token_type']) ? strval($tj['token_type']) : 'Bearer';
+        $expiresIn = isset($tj['expires_in']) ? intval($tj['expires_in']) : 3600;
+        $tokenExpiresAt = time() + max(60, $expiresIn - 60);
+        writeCache($tokenCacheKey, json_encode(["access_token" => $token, "token_type" => $tokenType, "expiresAt" => $tokenExpiresAt]));
+    }
+
+    $fromParam = $dateFrom . "T00:00:00Z";
+    $toParam = $dateTo . "T23:59:59Z";
+
+    $countries = array_values(array_filter(array_map(function ($s) { return strtoupper(trim($s)); }, preg_split('/\\s*,\\s*/', $countriesRaw))));
+    // Basic allowlist (FXStreet uses e.g. US, EMU, UK, JP, CH, CA, AU, NZ, CN, HK)
+    $countries = array_values(array_filter($countries, function ($c) { return preg_match('/^[A-Z]{2,3}$/', $c); }));
+
+    $qs = [];
+    foreach ($countries as $c) $qs[] = "countries=" . rawurlencode($c);
+    $query = count($qs) ? ("?" . implode("&", $qs)) : "";
+
+    $base = readDotEnvKey("FXS_CALENDAR_API_BASE");
+    if ($base === '') $base = "https://calendar-api.fxstreet.com";
+    $base = rtrim($base, "/");
+
+    $url = $base . "/" . rawurlencode($culture) . "/api/" . rawurlencode(strtolower($apiVersion)) . "/eventDates/" . rawurlencode($fromParam) . "/" . rawurlencode($toParam) . $query;
+
+    $ttl = 10 * 60; // 10 minutes
+    $cacheKey = "fxstreet_calendar_" . $dateFrom . "_" . $dateTo . "_v" . strtolower($apiVersion) . "_c" . $culture . "_cty" . md5($countriesRaw);
+    $cached = readCache($cacheKey, $ttl);
+    if ($cached !== null) {
+        echo $cached;
+        exit();
+    }
+
+    $res = fetchUrlWithFallback($url, ['Accept: application/json', "Authorization: " . $tokenType . " " . $token]);
+    if (!($res['code'] == 200 && $res['body'])) {
+        respondJson(["error" => "FXStreet calendar fetch failed", "code" => $res['code'], "detail" => $res['error']], 502);
+    }
+
+    $parsed = json_decode($res['body'], true);
+    if (!is_array($parsed)) {
+        respondJson(["error" => "FXStreet calendar invalid JSON"], 502);
+    }
+
+    $out = json_encode([
+        "dateFrom" => $dateFrom,
+        "dateTo" => $dateTo,
+        "culture" => $culture,
+        "apiVersion" => strtolower($apiVersion),
+        "events" => $parsed,
+        "source" => "fxstreet_api",
+    ]);
+    writeCache($cacheKey, $out);
+    echo $out;
+    exit();
+}
+
+// ── investing_calendar: Economic calendar events (structured JSON) ──────────
+if ($action === 'investing_calendar') {
+    header("Content-Type: application/json; charset=utf-8");
+
+    $dateFrom = isset($_GET['dateFrom']) ? trim($_GET['dateFrom']) : '';
+    $dateTo = isset($_GET['dateTo']) ? trim($_GET['dateTo']) : '';
+    $timeZone = isset($_GET['timeZone']) ? intval($_GET['timeZone']) : 8;
+
+    if ($dateFrom === '' || $dateTo === '') {
+        respondJson(["error" => "Missing dateFrom/dateTo"], 400);
+    }
+    if (!preg_match('/^\\d{4}-\\d{2}-\\d{2}$/', $dateFrom) || !preg_match('/^\\d{4}-\\d{2}-\\d{2}$/', $dateTo)) {
+        respondJson(["error" => "Invalid dateFrom/dateTo format. Use YYYY-MM-DD."], 400);
+    }
+
+    $ttl = 10 * 60; // 10 minutes
+    $cacheKey = "investing_calendar_" . $dateFrom . "_" . $dateTo . "_tz" . strval($timeZone);
+    $cached = readCache($cacheKey, $ttl);
+    if ($cached !== null) {
+        echo $cached;
+        exit();
+    }
+
+    $cookieJar = __DIR__ . "/cache/investing_cookiejar.txt";
+    if (!is_dir(__DIR__ . "/cache")) {
+        @mkdir(__DIR__ . "/cache", 0755, true);
+    }
+
+    // Warm up cookies (best-effort).
+    $warm = fetchUrlWithCookieJar(
+        "https://www.investing.com/economic-calendar/",
+        $cookieJar,
+        [
+            "Accept: text/html, */*",
+            "Accept-Language: en-US,en;q=0.9",
+            "Connection: keep-alive",
+        ]
+    );
+    if (!($warm['code'] == 200 && $warm['body'])) {
+        $payload = ["error" => "Investing warmup failed", "code" => $warm['code'], "detail" => $warm['error']];
+        if (isDebugEnabled() && isset($warm['info'])) $payload['info'] = $warm['info'];
+        respondJson($payload, 502);
+    }
+
+    $postFields = http_build_query([
+        "dateFrom" => $dateFrom,
+        "dateTo" => $dateTo,
+        "timeZone" => $timeZone,
+    ]);
+
+    $res = fetchUrlWithCookieJar(
+        "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData",
+        $cookieJar,
+        [
+            "Accept: */*",
+            "Accept-Language: en-US,en;q=0.9",
+            "Content-Type: application/x-www-form-urlencoded",
+            "Origin: https://www.investing.com",
+            "Referer: https://www.investing.com/economic-calendar/",
+            "X-Requested-With: XMLHttpRequest",
+        ],
+        $postFields
+    );
+    if (!($res['code'] == 200 && $res['body'])) {
+        $payload = ["error" => "Investing calendar fetch failed", "code" => $res['code'], "detail" => $res['error']];
+        if (isDebugEnabled() && isset($res['info'])) $payload['info'] = $res['info'];
+        respondJson($payload, 502);
+    }
+
+    $parsed = json_decode($res['body'], true);
+    $html = is_array($parsed) && isset($parsed['data']) ? strval($parsed['data']) : '';
+    if ($html === '') {
+        // Cloudflare challenge often returns HTML (not JSON); return a soft payload so the app can fall back.
+        $looksLikeCf = (strpos($res['body'], 'Just a moment') !== false) || (strpos($res['body'], 'challenges.cloudflare.com') !== false);
+        if ($looksLikeCf) {
+            $jsonOut = json_encode([
+                "dateFrom" => $dateFrom,
+                "dateTo" => $dateTo,
+                "timeZone" => $timeZone,
+                "events" => [],
+                "source" => "investing_blocked_cloudflare",
+                "blocked" => true,
+                "message" => "Investing.com is blocked by Cloudflare challenge on this host.",
+            ]);
+            writeCache($cacheKey, $jsonOut);
+            echo $jsonOut;
+            exit();
+        }
+        respondJson(["error" => "Investing response missing data"], 502);
+    }
+
+    libxml_use_internal_errors(true);
+    $dom = new DOMDocument();
+    $dom->loadHTML('<?xml encoding="utf-8" ?><table><tbody>' . $html . '</tbody></table>');
+    $xpath = new DOMXPath($dom);
+    $rows = $xpath->query("//tr[contains(concat(' ', normalize-space(@class), ' '), ' js-event-item ')]");
+
+    $clean = function ($text) {
+        $t = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $t = str_replace("\xC2\xA0", " ", $t); // NBSP
+        $t = preg_replace('/\\s+/', ' ', $t);
+        return trim($t);
+    };
+
+    $events = [];
+    foreach ($rows as $tr) {
+        /** @var DOMElement $tr */
+        $dt = $clean($tr->getAttribute("data-event-datetime"));
+        if ($dt === '') continue;
+
+        $idRaw = $tr->getAttribute("id");
+        $idNum = 0;
+        if (preg_match('/eventRowId_(\\d+)/', $idRaw, $m)) $idNum = intval($m[1]);
+
+        $tds = $xpath->query("./td", $tr);
+        if ($tds->length < 4) continue;
+
+        $currencyCell = $tds->item(1);
+        $currencyText = $clean($currencyCell ? $currencyCell->textContent : '');
+        $currency = '';
+        if (preg_match('/\\b([A-Z]{3})\\b$/', $currencyText, $m)) $currency = $m[1];
+
+        $country = '';
+        $flagSpan = $currencyCell ? $xpath->query(".//span[@title]", $currencyCell)->item(0) : null;
+        if ($flagSpan instanceof DOMElement) {
+            $country = $clean($flagSpan->getAttribute("title"));
+        }
+
+        $importanceCell = $tds->item(2);
+        $importanceKey = $importanceCell instanceof DOMElement ? $importanceCell->getAttribute("data-img_key") : '';
+        $importance = 0;
+        if (preg_match('/bull(\\d+)/', $importanceKey, $m)) $importance = intval($m[1]);
+
+        $eventCell = $tds->item(3);
+        $title = $clean($eventCell ? $eventCell->textContent : '');
+        $url = '';
+        $a = $eventCell ? $xpath->query(".//a[@href]", $eventCell)->item(0) : null;
+        if ($a instanceof DOMElement) {
+            $href = $clean($a->getAttribute("href"));
+            if ($href !== '') $url = (strpos($href, 'http') === 0) ? $href : ("https://www.investing.com" . $href);
+        }
+
+        $actual = $clean($tds->item(4) ? $tds->item(4)->textContent : '');
+        $forecast = $clean($tds->item(5) ? $tds->item(5)->textContent : '');
+        $previous = $clean($tds->item(6) ? $tds->item(6)->textContent : '');
+
+        $events[] = [
+            "id" => $idNum,
+            "datetime" => $dt,
+            "currency" => $currency,
+            "country" => $country,
+            "importance" => $importance,
+            "title" => $title,
+            "actual" => $actual,
+            "forecast" => $forecast,
+            "previous" => $previous,
+            "url" => $url,
+        ];
+    }
+
+    $out = [
+        "dateFrom" => $dateFrom,
+        "dateTo" => $dateTo,
+        "timeZone" => $timeZone,
+        "events" => $events,
+        "source" => "investing_getCalendarFilteredData",
+    ];
+    $jsonOut = json_encode($out);
+    writeCache($cacheKey, $jsonOut);
+    echo $jsonOut;
+    exit();
+}
+
+// ── forexfactory_thisweek: ForexFactory "this week" feed via faireconomy.media ─
+// Note: This is the only reliably reachable free endpoint (forexfactory.com is often Cloudflare-blocked).
+// Caveat: Feed usually does NOT include `actual`. We expose as-is so the app can degrade gracefully.
+if ($action === 'forexfactory_thisweek') {
+    header("Content-Type: application/json; charset=utf-8");
+
+    $format = isset($_GET['format']) ? strtolower(trim($_GET['format'])) : 'json';
+    if (!in_array($format, ['json', 'csv', 'xml'], true)) $format = 'json';
+
+    $url = "https://nfs.faireconomy.media/ff_calendar_thisweek." . $format;
+    $ttl = 10 * 60; // 10 minutes
+    $cacheKey = "ff_thisweek_" . $format;
+    $cached = readCache($cacheKey, $ttl);
+    if ($cached !== null) {
+        echo $cached;
+        exit();
+    }
+
+    $res = fetchUrlWithFallback($url, ['Accept: */*']);
+    if (!($res['code'] == 200 && $res['body'])) {
+        respondJson(["error" => "ForexFactory thisweek feed failed", "code" => $res['code'], "detail" => $res['error']], 502);
+    }
+
+    // Normalize response shape
+    $body = $res['body'];
+    if ($format === 'json') {
+        $decoded = json_decode($body, true);
+        if (!is_array($decoded)) respondJson(["error" => "ForexFactory thisweek invalid JSON"], 502);
+        $out = json_encode([
+            "events" => $decoded,
+            "source" => "forexfactory_thisweek",
+        ]);
+        writeCache($cacheKey, $out);
+        echo $out;
+        exit();
+    }
+
+    // csv/xml passthrough wrapped
+    $out = json_encode([
+        "raw" => $body,
+        "format" => $format,
+        "source" => "forexfactory_thisweek",
+    ]);
+    writeCache($cacheKey, $out);
+    echo $out;
+    exit();
+}
+
 // ── chart: Yahoo Finance OHLCV ──────────────────────────────────────────────
 if ($action === 'chart') {
     header("Content-Type: application/json");
@@ -158,6 +685,168 @@ if ($action === 'chart') {
     } else {
         http_response_code(502);
         echo json_encode(["error" => "Yahoo quote failed", "code" => $res['code']]);
+    }
+
+// ── cg_markets: CoinGecko Top Market Cap ───────────────────────────────────
+} elseif ($action === 'cg_markets') {
+    header("Content-Type: application/json; charset=utf-8");
+    $vs = isset($_GET['vs_currency']) ? strtolower(trim($_GET['vs_currency'])) : 'usd';
+    if (empty($vs)) $vs = 'usd';
+    $order = isset($_GET['order']) ? trim($_GET['order']) : 'market_cap_desc';
+    if ($order !== 'market_cap_desc' && $order !== 'volume_desc') $order = 'market_cap_desc';
+    $perPage = isset($_GET['per_page']) ? intval($_GET['per_page']) : 100;
+    if ($perPage < 1) $perPage = 1;
+    if ($perPage > 250) $perPage = 250;
+    $page = isset($_GET['page']) ? intval($_GET['page']) : 1;
+    if ($page < 1) $page = 1;
+    if ($page > 40) $page = 40;
+    $sparkline = isset($_GET['sparkline']) ? strtolower(trim($_GET['sparkline'])) : 'false';
+    $sparkline = ($sparkline === '1' || $sparkline === 'true') ? 'true' : 'false';
+    $ids = isset($_GET['ids']) ? trim($_GET['ids']) : '';
+    // allow a comma-separated ids list (CoinGecko IDs)
+    if (!empty($ids)) {
+        // basic safety: keep only expected chars
+        $ids = preg_replace('/[^a-zA-Z0-9_\\-\\,]/', '', $ids);
+    }
+
+    $ttl = 120; // 2 minutes
+    $cacheKey = "cg_markets_" . $vs . "_" . $order . "_" . $perPage . "_" . $page . "_" . $sparkline . "_" . ($ids ? ("ids_" . md5($ids)) : "noids");
+    $cached = readCache($cacheKey, $ttl);
+    if ($cached !== null) {
+        echo $cached;
+        exit();
+    }
+
+    $url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=" . rawurlencode($vs)
+         . "&order=" . rawurlencode($order)
+         . "&per_page=" . rawurlencode(strval($perPage))
+         . "&page=" . rawurlencode(strval($page))
+         . "&sparkline=" . rawurlencode($sparkline);
+    if (!empty($ids)) $url .= "&ids=" . rawurlencode($ids);
+    $res = fetchUrlWithFallback($url, ['Accept: application/json']);
+    if ($res['code'] == 200 && $res['body']) {
+        $json = $res['body'];
+        writeCache($cacheKey, $json);
+        echo $json;
+    } else {
+        respondJson(["error" => "CoinGecko markets failed", "code" => $res['code'], "detail" => $res['error']], 502);
+    }
+
+// ── cg_market_chart: CoinGecko price series ────────────────────────────────
+} elseif ($action === 'cg_market_chart') {
+    header("Content-Type: application/json; charset=utf-8");
+    $id = isset($_GET['id']) ? trim($_GET['id']) : '';
+    if (empty($id)) respondJson(["error" => "Missing id"], 400);
+    $vs = isset($_GET['vs_currency']) ? strtolower(trim($_GET['vs_currency'])) : 'usd';
+    if (empty($vs)) $vs = 'usd';
+    $days = isset($_GET['days']) ? intval($_GET['days']) : 120;
+    if ($days < 1) $days = 1;
+    if ($days > 3650) $days = 3650;
+    $interval = isset($_GET['interval']) ? strtolower(trim($_GET['interval'])) : '';
+    if ($interval !== 'hourly' && $interval !== 'daily' && $interval !== '') $interval = '';
+
+    // Cache by horizon
+    $ttl = 6 * 60 * 60; // default 6h
+    if ($days <= 1) $ttl = 60;
+    else if ($days <= 7) $ttl = 5 * 60;
+    else if ($days <= 90) $ttl = 30 * 60;
+
+    $cacheKey = "cg_chart_" . $id . "_" . $vs . "_" . $days . "_" . ($interval ? $interval : 'auto');
+    $cached = readCache($cacheKey, $ttl);
+    if ($cached !== null) {
+        echo $cached;
+        exit();
+    }
+
+    $url = "https://api.coingecko.com/api/v3/coins/" . rawurlencode($id) . "/market_chart?vs_currency=" . rawurlencode($vs)
+         . "&days=" . rawurlencode(strval($days));
+    if (!empty($interval)) $url .= "&interval=" . rawurlencode($interval);
+    $res = fetchUrlWithFallback($url, ['Accept: application/json']);
+    if ($res['code'] == 200 && $res['body']) {
+        $json = $res['body'];
+        writeCache($cacheKey, $json);
+        echo $json;
+    } else {
+        respondJson(["error" => "CoinGecko market_chart failed", "code" => $res['code'], "detail" => $res['error']], 502);
+    }
+
+// ── binance_exchangeInfo: Binance spot symbols ─────────────────────────────
+} elseif ($action === 'binance_exchangeInfo') {
+    header("Content-Type: application/json; charset=utf-8");
+    $ttl = 6 * 60 * 60; // 6h
+    $cacheKey = "binance_exchangeInfo";
+    $cached = readCache($cacheKey, $ttl);
+    if ($cached !== null) {
+        echo $cached;
+        exit();
+    }
+
+    $url = "https://api.binance.com/api/v3/exchangeInfo";
+    $res = fetchUrlWithFallback($url, ['Accept: application/json']);
+    if ($res['code'] == 200 && $res['body']) {
+        $json = $res['body'];
+        writeCache($cacheKey, $json);
+        echo $json;
+    } else {
+        respondJson(["error" => "Binance exchangeInfo failed", "code" => $res['code'], "detail" => $res['error']], 502);
+    }
+
+// ── binance_ticker24hr: Binance 24h tickers (for top by volume) ────────────
+} elseif ($action === 'binance_ticker24hr') {
+    header("Content-Type: application/json; charset=utf-8");
+    $ttl = 15; // 15s (UI freshness; still reduces repeated hits)
+    $cacheKey = "binance_ticker24hr";
+    $cached = readCache($cacheKey, $ttl);
+    if ($cached !== null) {
+        echo $cached;
+        exit();
+    }
+
+    $url = "https://api.binance.com/api/v3/ticker/24hr";
+    $res = fetchUrlWithFallback($url, ['Accept: application/json']);
+    if ($res['code'] == 200 && $res['body']) {
+        $json = $res['body'];
+        writeCache($cacheKey, $json);
+        echo $json;
+    } else {
+        respondJson(["error" => "Binance ticker24hr failed", "code" => $res['code'], "detail" => $res['error']], 502);
+    }
+
+// ── binance_klines: Binance OHLCV by symbol ────────────────────────────────
+} elseif ($action === 'binance_klines') {
+    header("Content-Type: application/json; charset=utf-8");
+    $symbol = isset($_GET['symbol']) ? strtoupper(trim($_GET['symbol'])) : '';
+    if (empty($symbol)) respondJson(["error" => "Missing symbol"], 400);
+    // Allowed intervals (Binance spot)
+    $interval = isset($_GET['interval']) ? trim($_GET['interval']) : '1d';
+    $allowedIntervals = ['1m','3m','5m','15m','30m','1h','2h','4h','6h','8h','12h','1d','3d','1w','1M'];
+    if (!in_array($interval, $allowedIntervals, true)) $interval = '1d';
+    $limit = isset($_GET['limit']) ? intval($_GET['limit']) : 500;
+    if ($limit < 1) $limit = 1;
+    if ($limit > 1000) $limit = 1000;
+    $startTime = isset($_GET['startTime']) ? trim($_GET['startTime']) : '';
+    $endTime = isset($_GET['endTime']) ? trim($_GET['endTime']) : '';
+
+    $ttl = 60; // 1 min
+    $cacheKey = "binance_klines_" . $symbol . "_" . $interval . "_" . $limit . "_" . ($startTime ? $startTime : "na") . "_" . ($endTime ? $endTime : "na");
+    $cached = readCache($cacheKey, $ttl);
+    if ($cached !== null) {
+        echo $cached;
+        exit();
+    }
+
+    $url = "https://api.binance.com/api/v3/klines?symbol=" . rawurlencode($symbol)
+         . "&interval=" . rawurlencode($interval)
+         . "&limit=" . rawurlencode(strval($limit));
+    if (!empty($startTime)) $url .= "&startTime=" . rawurlencode($startTime);
+    if (!empty($endTime)) $url .= "&endTime=" . rawurlencode($endTime);
+    $res = fetchUrlWithFallback($url, ['Accept: application/json']);
+    if ($res['code'] == 200 && $res['body']) {
+        $json = $res['body'];
+        writeCache($cacheKey, $json);
+        echo $json;
+    } else {
+        respondJson(["error" => "Binance klines failed", "code" => $res['code'], "detail" => $res['error']], 502);
     }
 
 // ── cot: Mirror via cotdata.net free API (latest only) ──────────────────────

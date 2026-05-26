@@ -7,6 +7,7 @@ import type { RssItem } from '../lib/rss';
 import TradingViewTimeline from './TradingViewTimeline';
 import EconomicCalendar from './EconomicCalendar';
 import MacroForexStrategy from './MacroForexStrategy';
+import MacroRegimeMatrix from './MacroRegimeMatrix';
 import styles from '../App.module.css';
 
 const RSS_SOURCES = {
@@ -28,6 +29,7 @@ export default function MacroInsights({ isActive }: MacroInsightsProps) {
   const [rssUrl, setRssUrl] = useState(RSS_SOURCES["💱 Forex (EN)"]);
   const [news, setNews] = useState<RssItem[]>([]);
   const [loadingRss, setLoadingRss] = useState(false);
+  const [view, setView] = useState<'matrix' | 'news'>('matrix');
 
   useEffect(() => {
     if (!isActive) return;
@@ -50,65 +52,86 @@ export default function MacroInsights({ isActive }: MacroInsightsProps) {
 
   return (
     <motion.div className={styles.macroStack} initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <MacroForexStrategy />
-
-      <div className={styles.macroDashboard}>
-        <div className={clsx(styles.glassPanel, styles.macroLeft)}>
-          <div className={styles.controlGrid} style={{ marginBottom: '1.5rem' }}>
-            <div className={styles.controlGroup}>
-              <label>Nguồn Tin (RSS Source)</label>
-              <select value={rssUrl} onChange={e => setRssUrl(e.target.value)}>
-                {Object.entries(RSS_SOURCES).map(([name, url]) => (
-                  <option key={name} value={url}>{name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {loadingRss ? (
-            <div style={{ textAlign: 'center', padding: '3rem' }}>
-              <Activity className="animate-spin" style={{ margin: '0 auto 1rem', width: 32, height: 32, color: 'var(--accent)' }} />
-              <p>Đang tải tin tức vĩ mô...</p>
-            </div>
-          ) : (
-            <div className={styles.newsGrid} style={{ flex: 1, overflowY: 'auto' }}>
-              {news.map((item, idx) => (
-                <a key={idx} href={item.link} target="_blank" rel="noopener noreferrer" className={styles.newsCard}>
-                  <div className={styles.newsHeader}>
-                    <h3 className={styles.newsTitle}>{item.title}</h3>
-                  </div>
-                  <div className={styles.newsDesc}>{item.description}</div>
-
-                  <div className={styles.newsFooter}>
-                    <span className={styles.newsDate}>
-                      {new Date(item.pubDate).toLocaleDateString('vi-VN', {
-                        year: 'numeric', month: 'short', day: 'numeric',
-                        hour: '2-digit', minute: '2-digit'
-                      })}
-                    </span>
-                    <span className={clsx(
-                      styles.badge,
-                      item.sentiment === 'BUY' ? styles.badgeBuy :
-                      item.sentiment === 'SELL' ? styles.badgeSell : styles.badgeNeutral
-                    )}>
-                      {item.sentiment}
-                    </span>
-                  </div>
-                </a>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className={styles.macroRight}>
-          <div className={styles.widgetContainer} style={{ height: '400px' }}>
-            <TradingViewTimeline />
-          </div>
-          <div className={styles.widgetContainer} style={{ height: '500px' }}>
-            <EconomicCalendar />
-          </div>
-        </div>
+      <div className={styles.strategyKeyRow} style={{ marginBottom: '0.25rem' }}>
+        <button
+          className={clsx(styles.strategyButtonSecondary, view === 'matrix' && styles.tabButtonActive)}
+          onClick={() => setView('matrix')}
+        >
+          Macro Regime Matrix
+        </button>
+        <button
+          className={clsx(styles.strategyButtonSecondary, view === 'news' && styles.tabButtonActive)}
+          onClick={() => setView('news')}
+        >
+          Macro News + Tools
+        </button>
       </div>
+
+      {view === 'matrix' ? (
+        <MacroRegimeMatrix isActive={isActive} />
+      ) : (
+        <>
+          <MacroForexStrategy />
+
+          <div className={styles.macroDashboard}>
+            <div className={clsx(styles.glassPanel, styles.macroLeft)}>
+              <div className={styles.controlGrid} style={{ marginBottom: '1.5rem' }}>
+                <div className={styles.controlGroup}>
+                  <label>Nguồn Tin (RSS Source)</label>
+                  <select value={rssUrl} onChange={e => setRssUrl(e.target.value)}>
+                    {Object.entries(RSS_SOURCES).map(([name, url]) => (
+                      <option key={name} value={url}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {loadingRss ? (
+                <div style={{ textAlign: 'center', padding: '3rem' }}>
+                  <Activity className="animate-spin" style={{ margin: '0 auto 1rem', width: 32, height: 32, color: 'var(--accent)' }} />
+                  <p>Đang tải tin tức vĩ mô...</p>
+                </div>
+              ) : (
+                <div className={styles.newsGrid} style={{ flex: 1, overflowY: 'auto' }}>
+                  {news.map((item, idx) => (
+                    <a key={idx} href={item.link} target="_blank" rel="noopener noreferrer" className={styles.newsCard}>
+                      <div className={styles.newsHeader}>
+                        <h3 className={styles.newsTitle}>{item.title}</h3>
+                      </div>
+                      <div className={styles.newsDesc}>{item.description}</div>
+
+                      <div className={styles.newsFooter}>
+                        <span className={styles.newsDate}>
+                          {new Date(item.pubDate).toLocaleDateString('vi-VN', {
+                            year: 'numeric', month: 'short', day: 'numeric',
+                            hour: '2-digit', minute: '2-digit'
+                          })}
+                        </span>
+                        <span className={clsx(
+                          styles.badge,
+                          item.sentiment === 'BUY' ? styles.badgeBuy :
+                          item.sentiment === 'SELL' ? styles.badgeSell : styles.badgeNeutral
+                        )}>
+                          {item.sentiment}
+                        </span>
+                      </div>
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className={styles.macroRight}>
+              <div className={styles.widgetContainer} style={{ height: '400px' }}>
+                <TradingViewTimeline />
+              </div>
+              <div className={styles.widgetContainer} style={{ height: '500px' }}>
+                <EconomicCalendar />
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </motion.div>
   );
 }

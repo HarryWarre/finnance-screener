@@ -11,6 +11,16 @@ export interface Fundamentals {
   roe: number;
 }
 
+export type CryptoMarketCoin = {
+  id: string;
+  symbol: string;
+  name: string;
+  marketCapRank: number | null;
+  marketCapUsd: number | null;
+};
+
+export type CryptoProvider = 'coingecko' | 'binance_spot';
+
 export interface MacroCalendarRawEvent {
   CalendarId?: string | number;
   Date?: string;
@@ -35,6 +45,79 @@ export interface MacroCalendarResponse {
   source: string;
 }
 
+export interface InvestingCalendarEvent {
+  id: number;
+  datetime: string; // Investing attribute `data-event-datetime`, e.g. "2026/05/29 00:00:00"
+  currency: string; // e.g. "USD"
+  country: string; // e.g. "United States"
+  importance: number; // 0..3 (0 when unknown)
+  title: string;
+  actual: string;
+  forecast: string;
+  previous: string;
+  url: string;
+}
+
+export interface InvestingCalendarResponse {
+  dateFrom: string;
+  dateTo: string;
+  timeZone: number;
+  events: InvestingCalendarEvent[];
+  source: string;
+  blocked?: boolean;
+  message?: string;
+}
+
+export interface TradingEconomicsCalendarRawEvent {
+  CalendarId?: string | number;
+  Date?: string;
+  Country?: string;
+  Category?: string;
+  Event?: string;
+  Actual?: string;
+  Previous?: string;
+  Forecast?: string;
+  TEForecast?: string;
+  Importance?: number | string;
+  SourceURL?: string;
+  URL?: string;
+  Currency?: string;
+  Unit?: string;
+  Ticker?: string;
+  Symbol?: string;
+}
+
+export interface FinnhubEconomicCalendarEvent {
+  actual?: number | string | null;
+  country?: string | null; // e.g. "US"
+  estimate?: number | string | null;
+  event?: string | null;
+  impact?: string | null; // "low" | "medium" | "high"
+  prev?: number | string | null;
+  time?: string | null; // e.g. "2020-06-02 01:30:00" or ISO
+  unit?: string | null;
+}
+
+export interface FxStreetEventDateRaw {
+  IdEventDate?: string;
+  DateUtc?: string;
+  CountryCode?: string;
+  CountryName?: string;
+  CurrencyId?: string;
+  CurrencySymbol?: string;
+  Volatility?: number;
+  Actual?: number | string | null;
+  Consensus?: number | string | null;
+  Previous?: number | string | null;
+  Revised?: number | string | null;
+  EventName?: string;
+  Name?: string;
+  Event?: string;
+  Title?: string;
+  UrlSource?: string;
+  SourceUrl?: string;
+}
+
 export type MacroTrendBias = 'bullish' | 'bearish' | 'neutral';
 
 export interface CurrencyMacroTrend {
@@ -52,6 +135,28 @@ export interface MacroTrendSnapshot {
 }
 
 const PROXY_URL = 'proxy.php'; // relative path — works in any subfolder on cPanel
+const COINGECKO_API_BASE = 'https://api.coingecko.com/api/v3';
+const CG_CHART_CACHE_TTL_MS = 2 * 60 * 1000;
+type CgChartCacheKey = string;
+const cgMarketChartMemo = new Map<CgChartCacheKey, { expiresAt: number; promise: Promise<OHLCV | null> }>();
+
+let cgNextAllowedAt = 0;
+let cgMinSpacingMs = 700;
+async function paceCoinGecko() {
+  const now = Date.now();
+  const waitMs = Math.max(0, cgNextAllowedAt - now);
+  if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+  const nextNow = Date.now();
+  cgNextAllowedAt = nextNow + cgMinSpacingMs;
+}
+function noteCoinGeckoResult(status?: number) {
+  if (status === 429) {
+    cgMinSpacingMs = Math.min(3000, Math.round(cgMinSpacingMs * 1.6));
+    return;
+  }
+  // Slowly relax pacing after successes / non-rate-limit errors.
+  cgMinSpacingMs = Math.max(350, Math.round(cgMinSpacingMs * 0.92));
+}
 
 const MAX_PARALLEL_PROXY_REQUESTS = 4;
 let activeProxyRequests = 0;
@@ -82,11 +187,248 @@ async function fetchJsonWithTimeout(url: string, timeoutMs = 6000): Promise<unkn
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (!res.ok) {
+      const err = new Error('HTTP ' + res.status) as Error & { status?: number; retryAfterMs?: number };
+      err.status = res.status;
+      const retryAfterRaw = res.headers.get('retry-after');
+      const retryAfterSec = retryAfterRaw ? Number(retryAfterRaw) : NaN;
+      if (Number.isFinite(retryAfterSec) && retryAfterSec > 0) err.retryAfterMs = Math.round(retryAfterSec * 1000);
+      throw err;
+    }
     return await res.json();
   } finally {
     clearTimeout(t);
   }
+}
+
+async function fetchJsonWithRetry(
+  url: string,
+  opts?: { timeoutMs?: number; retries?: number; minRetryDelayMs?: number }
+): Promise<unknown> {
+  const timeoutMs = Math.max(1000, Math.round(opts?.timeoutMs ?? 8000));
+  const retries = Math.max(0, Math.min(4, Math.round(opts?.retries ?? 2)));
+  const minRetryDelayMs = Math.max(250, Math.round(opts?.minRetryDelayMs ?? 900));
+
+  const readNumberField = (err: unknown, key: 'status' | 'retryAfterMs') => {
+    if (!err || typeof err !== 'object') return NaN;
+    const v = (err as Record<string, unknown>)[key];
+    return typeof v === 'number' ? v : NaN;
+  };
+
+  let attempt = 0;
+  for (;;) {
+    try {
+      const isCoinGecko = url.includes('cg_') || url.startsWith(COINGECKO_API_BASE);
+      if (isCoinGecko) {
+        await paceCoinGecko();
+      }
+      const out = await fetchJsonWithTimeout(url, timeoutMs);
+      if (isCoinGecko) noteCoinGeckoResult(200);
+      return out;
+    } catch (e: unknown) {
+      const status = readNumberField(e, 'status');
+      const retryAfterMs = readNumberField(e, 'retryAfterMs');
+      const isRateLimit = status === 429;
+      if (Number.isFinite(status)) noteCoinGeckoResult(status);
+      if (attempt >= retries || (!isRateLimit && status !== 503)) throw e;
+
+      const backoff = Math.round(minRetryDelayMs * Math.pow(2, attempt));
+      const delay = Number.isFinite(retryAfterMs) ? Math.max(backoff, retryAfterMs) : backoff;
+      await new Promise((r) => setTimeout(r, delay));
+      attempt += 1;
+    }
+  }
+}
+
+export async function fetchCryptoTopMarketCap(opts?: {
+  perPage?: number;
+  page?: number;
+  vsCurrency?: string;
+  ids?: string[];
+}): Promise<CryptoMarketCoin[]> {
+  const perPage = Math.max(1, Math.min(250, Number(opts?.perPage ?? 50)));
+  const page = Math.max(1, Number(opts?.page ?? 1));
+  const vs = (opts?.vsCurrency ?? 'usd').trim().toLowerCase() || 'usd';
+  const ids = (opts?.ids ?? []).map((s) => s.trim()).filter(Boolean);
+  const idsParam = ids.length ? `&ids=${encodeURIComponent(ids.join(','))}` : '';
+  const proxyUrl = `${PROXY_URL}?action=cg_markets&vs_currency=${encodeURIComponent(vs)}&order=market_cap_desc&per_page=${encodeURIComponent(String(perPage))}&page=${encodeURIComponent(String(page))}&sparkline=false${idsParam}`;
+  const directUrl = `${COINGECKO_API_BASE}/coins/markets?vs_currency=${encodeURIComponent(vs)}&order=market_cap_desc&per_page=${encodeURIComponent(String(perPage))}&page=${encodeURIComponent(String(page))}&sparkline=false${idsParam}`;
+
+  try {
+    let data: unknown;
+    try {
+      data = await fetchJsonWithRetry(proxyUrl, { timeoutMs: 10000, retries: 2, minRetryDelayMs: 900 });
+    } catch {
+      data = await fetchJsonWithRetry(directUrl, { timeoutMs: 10000, retries: 2, minRetryDelayMs: 900 });
+    }
+    const arr = Array.isArray(data) ? data : [];
+    return arr
+      .map((c: unknown) => {
+        if (!isRecord(c)) return null;
+        const id = typeof c.id === 'string' ? c.id : '';
+        const symbol = typeof c.symbol === 'string' ? c.symbol : '';
+        const name = typeof c.name === 'string' ? c.name : '';
+        const marketCapRank = c.market_cap_rank === null || c.market_cap_rank === undefined ? null : Number(c.market_cap_rank);
+        const marketCapUsd = c.market_cap === null || c.market_cap === undefined ? null : Number(c.market_cap);
+        if (!id || !symbol) return null;
+        return { id, symbol, name, marketCapRank: Number.isFinite(marketCapRank) ? marketCapRank : null, marketCapUsd: Number.isFinite(marketCapUsd) ? marketCapUsd : null };
+      })
+      .filter(Boolean) as CryptoMarketCoin[];
+  } catch {
+    return [];
+  }
+}
+
+type BinanceTicker24hr = {
+  symbol: string;
+  quoteVolume?: string;
+  volume?: string;
+  lastPrice?: string;
+};
+
+async function fetchBinanceTicker24hr(): Promise<BinanceTicker24hr[]> {
+  try {
+    const data = await fetchJsonWithRetry(`${PROXY_URL}?action=binance_ticker24hr`, { timeoutMs: 12000, retries: 1, minRetryDelayMs: 700 });
+    return Array.isArray(data) ? (data as BinanceTicker24hr[]) : [];
+  } catch {
+    try {
+      const data = await fetchJsonWithRetry(`https://api.binance.com/api/v3/ticker/24hr`, { timeoutMs: 12000, retries: 1, minRetryDelayMs: 700 });
+      return Array.isArray(data) ? (data as BinanceTicker24hr[]) : [];
+    } catch {
+      return [];
+    }
+  }
+}
+
+export async function fetchCryptoTopSymbolsBinance(opts?: {
+  topN?: number;
+  quoteAsset?: 'USDT' | 'USDC' | 'BUSD';
+  minQuoteVolumeUsd?: number;
+}): Promise<Array<{ symbol: string; base: string; quote: 'USDT' | 'USDC' | 'BUSD'; quoteVolume: number }>> {
+  const topN = Math.max(1, Math.min(400, Math.round(Number(opts?.topN ?? 100))));
+  const quoteAsset = (opts?.quoteAsset ?? 'USDT').trim().toUpperCase() as 'USDT' | 'USDC' | 'BUSD';
+  const minQuoteVolumeUsd = Math.max(0, Number(opts?.minQuoteVolumeUsd ?? 0));
+
+  const tickers = await fetchBinanceTicker24hr();
+  if (!tickers.length) return [];
+
+  const rows: Array<{ symbol: string; base: string; quote: 'USDT' | 'USDC' | 'BUSD'; quoteVolume: number }> = [];
+  for (const t of tickers) {
+    const sym = typeof t.symbol === 'string' ? t.symbol.trim().toUpperCase() : '';
+    if (!sym || !sym.endsWith(quoteAsset)) continue;
+    // Filter leveraged tokens / weird tickers to reduce garbage universe.
+    if (/(UP|DOWN|BULL|BEAR)$/.test(sym.replace(quoteAsset, ''))) continue;
+    const quoteVol = Number(t.quoteVolume ?? '');
+    if (!Number.isFinite(quoteVol)) continue;
+    if (quoteVol < minQuoteVolumeUsd) continue;
+    const base = sym.slice(0, sym.length - quoteAsset.length);
+    if (!base) continue;
+    rows.push({ symbol: sym, base, quote: quoteAsset, quoteVolume: quoteVol });
+  }
+
+  rows.sort((a, b) => b.quoteVolume - a.quoteVolume);
+  return rows.slice(0, topN);
+}
+
+export async function fetchCryptoKlinesBinance(opts: {
+  symbol: string; // e.g. BTCUSDT
+  interval: string; // Binance interval
+  limit: number;
+}): Promise<OHLCV | null> {
+  const symbol = opts.symbol.trim().toUpperCase();
+  if (!symbol) return null;
+  const interval = opts.interval.trim() || '1d';
+  const limit = Math.max(2, Math.min(1000, Math.round(opts.limit)));
+  const url = `${PROXY_URL}?action=binance_klines&symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${encodeURIComponent(String(limit))}`;
+
+  try {
+    let data: unknown;
+    try {
+      data = await fetchJsonWithRetry(url, { timeoutMs: 15000, retries: 1, minRetryDelayMs: 700 });
+    } catch {
+      data = await fetchJsonWithRetry(`https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${encodeURIComponent(String(limit))}`, {
+        timeoutMs: 15000,
+        retries: 1,
+        minRetryDelayMs: 700,
+      });
+    }
+
+    if (!Array.isArray(data)) return null;
+    const ts: number[] = [];
+    const close: number[] = [];
+    for (const row of data as unknown[]) {
+      if (!Array.isArray(row) || row.length < 5) continue;
+      const openTime = row[0];
+      const closeStr = row[4];
+      if (typeof openTime !== 'number' || (typeof closeStr !== 'string' && typeof closeStr !== 'number')) continue;
+      const c = typeof closeStr === 'number' ? closeStr : Number(closeStr);
+      if (!Number.isFinite(c)) continue;
+      ts.push(Math.round(openTime / 1000));
+      close.push(c);
+    }
+    if (close.length < 2) return null;
+    return { timestamp: ts, close };
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchCryptoMarketChart(opts: {
+  id: string;
+  vsCurrency?: string;
+  days?: number;
+  interval?: 'hourly' | 'daily';
+}): Promise<OHLCV | null> {
+  const id = opts.id.trim();
+  if (!id) return null;
+  const vs = (opts.vsCurrency ?? 'usd').trim().toLowerCase() || 'usd';
+  const days = Math.max(1, Math.min(3650, Math.round(Number(opts.days ?? 120))));
+  const interval = opts.interval;
+  const cacheKey = `${id}::${vs}::${days}::${interval ?? ''}`;
+  const cached = cgMarketChartMemo.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+
+  const proxyUrl =
+    `${PROXY_URL}?action=cg_market_chart&id=${encodeURIComponent(id)}` +
+    `&vs_currency=${encodeURIComponent(vs)}` +
+    `&days=${encodeURIComponent(String(days))}` +
+    (interval ? `&interval=${encodeURIComponent(interval)}` : '');
+  const directUrl =
+    `${COINGECKO_API_BASE}/coins/${encodeURIComponent(id)}/market_chart` +
+    `?vs_currency=${encodeURIComponent(vs)}` +
+    `&days=${encodeURIComponent(String(days))}` +
+    (interval ? `&interval=${encodeURIComponent(interval)}` : '');
+
+  const promise = (async () => {
+    try {
+      let data: unknown;
+      try {
+        data = await fetchJsonWithRetry(proxyUrl, { timeoutMs: 15000, retries: 2, minRetryDelayMs: 1100 });
+      } catch {
+        data = await fetchJsonWithRetry(directUrl, { timeoutMs: 15000, retries: 2, minRetryDelayMs: 1100 });
+      }
+      if (!isRecord(data)) return null;
+      const prices = Array.isArray(data.prices) ? data.prices as unknown[] : [];
+      const ts: number[] = [];
+      const close: number[] = [];
+      for (const p of prices) {
+        if (!Array.isArray(p) || p.length < 2) continue;
+        const t0 = p[0];
+        const v0 = p[1];
+        if (typeof t0 !== 'number' || typeof v0 !== 'number') continue;
+        ts.push(Math.round(t0 / 1000));
+        close.push(v0);
+      }
+      if (close.length < 2) return null;
+      return { timestamp: ts, close };
+    } catch {
+      return null;
+    }
+  })();
+
+  cgMarketChartMemo.set(cacheKey, { expiresAt: Date.now() + CG_CHART_CACHE_TTL_MS, promise });
+  promise.catch(() => cgMarketChartMemo.delete(cacheKey));
+  return promise;
 }
 
 export type YahooInterval = '1m' | '2m' | '5m' | '15m' | '30m' | '60m' | '90m' | '1h' | '1d' | '5d' | '1wk' | '1mo' | '3mo';
@@ -842,6 +1184,391 @@ export async function fetchMacroCalendar(): Promise<MacroCalendarResponse> {
     const message = error instanceof Error ? error.message : 'Macro calendar fetch failed';
     throw new Error(`Không lấy được calendar free mode. ${message}`, { cause: error });
   }
+}
+
+export async function fetchInvestingCalendarRange(opts: {
+  dateFrom: string; // YYYY-MM-DD
+  dateTo: string; // YYYY-MM-DD
+  timeZone?: number;
+}): Promise<InvestingCalendarResponse> {
+  const dateFrom = opts.dateFrom.trim();
+  const dateTo = opts.dateTo.trim();
+  const timeZone = Number.isFinite(opts.timeZone) ? Math.round(opts.timeZone as number) : 8;
+
+  const url =
+    `${PROXY_URL}?action=investing_calendar` +
+    `&dateFrom=${encodeURIComponent(dateFrom)}` +
+    `&dateTo=${encodeURIComponent(dateTo)}` +
+    `&timeZone=${encodeURIComponent(String(timeZone))}`;
+
+  const data = await fetchJsonWithRetry(url, { timeoutMs: 15000, retries: 2, minRetryDelayMs: 900 });
+  if (!isRecord(data)) throw new Error('Invalid investing calendar response');
+  const events = Array.isArray(data.events) ? (data.events as unknown[]) : [];
+  return {
+    dateFrom: typeof data.dateFrom === 'string' ? data.dateFrom : dateFrom,
+    dateTo: typeof data.dateTo === 'string' ? data.dateTo : dateTo,
+    timeZone: typeof data.timeZone === 'number' ? data.timeZone : timeZone,
+    events: events
+      .map((e) => {
+        if (!isRecord(e)) return null;
+        const id = Number(e.id);
+        const datetime = typeof e.datetime === 'string' ? e.datetime : '';
+        const currency = typeof e.currency === 'string' ? e.currency : '';
+        const country = typeof e.country === 'string' ? e.country : '';
+        const importance = Number(e.importance);
+        const title = typeof e.title === 'string' ? e.title : '';
+        const actual = typeof e.actual === 'string' ? e.actual : '';
+        const forecast = typeof e.forecast === 'string' ? e.forecast : '';
+        const previous = typeof e.previous === 'string' ? e.previous : '';
+        const url = typeof e.url === 'string' ? e.url : '';
+        if (!datetime || !title) return null;
+        return {
+          id: Number.isFinite(id) ? id : 0,
+          datetime,
+          currency,
+          country,
+          importance: Number.isFinite(importance) ? importance : 0,
+          title,
+          actual,
+          forecast,
+          previous,
+          url,
+        } satisfies InvestingCalendarEvent;
+      })
+      .filter(Boolean) as InvestingCalendarEvent[],
+    source: typeof data.source === 'string' ? data.source : 'investing_calendar',
+    blocked: typeof data.blocked === 'boolean' ? data.blocked : undefined,
+    message: typeof data.message === 'string' ? data.message : undefined,
+  };
+}
+
+function inferCurrencyFromCountry(country: string): string {
+  const c = country.trim().toLowerCase();
+  if (!c) return '';
+  if (c.includes('united states')) return 'USD';
+  if (c.includes('euro') || c.includes('germany') || c.includes('france') || c.includes('italy') || c.includes('spain') || c.includes('netherlands')) return 'EUR';
+  if (c.includes('united kingdom')) return 'GBP';
+  if (c.includes('japan')) return 'JPY';
+  if (c.includes('switzerland')) return 'CHF';
+  if (c.includes('canada')) return 'CAD';
+  if (c.includes('australia')) return 'AUD';
+  if (c.includes('new zealand')) return 'NZD';
+  if (c.includes('china') || c.includes('hong kong')) return 'CNY';
+  return '';
+}
+
+function inferCurrencyFromCountryCode(code: string): string {
+  const c = code.trim().toUpperCase();
+  if (!c) return '';
+  if (c === 'US') return 'USD';
+  if (c === 'EU' || c === 'EMU' || c === 'EA') return 'EUR';
+  if (c === 'GB' || c === 'UK') return 'GBP';
+  if (c === 'JP') return 'JPY';
+  if (c === 'CH') return 'CHF';
+  if (c === 'CA') return 'CAD';
+  if (c === 'AU') return 'AUD';
+  if (c === 'NZ') return 'NZD';
+  if (c === 'CN' || c === 'HK') return 'CNY';
+  return '';
+}
+
+function hashStringToId(input: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return Math.abs(h) % 2147483647;
+}
+
+function toDisplayNumberString(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'number') return Number.isFinite(v) ? String(v) : '';
+  if (typeof v === 'string') return v;
+  return '';
+}
+
+export async function fetchTradingEconomicsCalendarRange(opts: {
+  dateFrom: string; // YYYY-MM-DD
+  dateTo: string; // YYYY-MM-DD
+  importance?: 1 | 2 | 3;
+}): Promise<{ dateFrom: string; dateTo: string; events: InvestingCalendarEvent[]; source: string }> {
+  const dateFrom = opts.dateFrom.trim();
+  const dateTo = opts.dateTo.trim();
+  const imp = opts.importance ? `&importance=${encodeURIComponent(String(opts.importance))}` : '';
+  const url =
+    `${PROXY_URL}?action=te_calendar` +
+    `&dateFrom=${encodeURIComponent(dateFrom)}` +
+    `&dateTo=${encodeURIComponent(dateTo)}` +
+    imp;
+
+  const data = await fetchJsonWithRetry(url, { timeoutMs: 15000, retries: 2, minRetryDelayMs: 900 });
+  if (!isRecord(data)) throw new Error('Invalid TradingEconomics calendar response');
+  const events = Array.isArray(data.events) ? (data.events as unknown[]) : [];
+
+  const mapped: InvestingCalendarEvent[] = events
+    .map((e) => {
+      if (!isRecord(e)) return null;
+      const calendarId = e.CalendarId ?? e.calendarId;
+      const id = Number(calendarId);
+      const datetime = typeof e.Date === 'string' ? e.Date : typeof e.date === 'string' ? e.date : '';
+      const country = typeof e.Country === 'string' ? e.Country : '';
+      const currencyRaw = typeof e.Currency === 'string' ? e.Currency : '';
+      const currency = currencyRaw.trim().toUpperCase() || inferCurrencyFromCountry(country);
+      const importanceRaw = e.Importance ?? e.importance;
+      const importance = typeof importanceRaw === 'number' ? importanceRaw : Number(importanceRaw);
+      const title = typeof e.Event === 'string' ? e.Event : '';
+      const actual = typeof e.Actual === 'string' ? e.Actual : '';
+      const forecast = typeof e.Forecast === 'string' && e.Forecast.trim() ? e.Forecast : typeof e.TEForecast === 'string' ? e.TEForecast : '';
+      const previous = typeof e.Previous === 'string' ? e.Previous : '';
+      const sourceUrl = typeof e.SourceURL === 'string' ? e.SourceURL : '';
+      const urlPath = typeof e.URL === 'string' ? e.URL : '';
+      const url = sourceUrl || (urlPath ? `https://tradingeconomics.com${urlPath}` : '');
+      if (!datetime || !title) return null;
+      return {
+        id: Number.isFinite(id) ? id : 0,
+        datetime,
+        currency,
+        country,
+        importance: Number.isFinite(importance) ? importance : 0,
+        title,
+        actual,
+        forecast,
+        previous,
+        url,
+      } satisfies InvestingCalendarEvent;
+    })
+    .filter(Boolean) as InvestingCalendarEvent[];
+
+  return {
+    dateFrom: typeof data.dateFrom === 'string' ? data.dateFrom : dateFrom,
+    dateTo: typeof data.dateTo === 'string' ? data.dateTo : dateTo,
+    events: mapped,
+    source: typeof data.source === 'string' ? data.source : 'tradingeconomics_api',
+  };
+}
+
+export async function fetchFinnhubCalendarRange(opts: {
+  dateFrom: string; // YYYY-MM-DD
+  dateTo: string; // YYYY-MM-DD
+}): Promise<{ dateFrom: string; dateTo: string; events: InvestingCalendarEvent[]; source: string }> {
+  const dateFrom = opts.dateFrom.trim();
+  const dateTo = opts.dateTo.trim();
+  const url = `${PROXY_URL}?action=finnhub_calendar&dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}`;
+
+  const data = await fetchJsonWithRetry(url, { timeoutMs: 15000, retries: 1, minRetryDelayMs: 900 });
+  if (!isRecord(data)) throw new Error('Invalid Finnhub calendar response');
+  const raw = Array.isArray(data.events) ? (data.events as unknown[]) : [];
+
+  const mapped: InvestingCalendarEvent[] = raw
+    .map((e) => {
+      if (!isRecord(e)) return null;
+      const time = typeof e.time === 'string' ? e.time : '';
+      const title = typeof e.event === 'string' ? e.event : '';
+      const countryCode = typeof e.country === 'string' ? e.country : '';
+      const impact = typeof e.impact === 'string' ? e.impact : '';
+      const unit = typeof e.unit === 'string' ? e.unit : '';
+
+      const currencyFromUnit = /^[A-Z]{3}$/.test(unit.trim().toUpperCase()) ? unit.trim().toUpperCase() : '';
+      const currency = currencyFromUnit || inferCurrencyFromCountryCode(countryCode) || inferCurrencyFromCountry(countryCode);
+
+      const importance =
+        impact.toLowerCase() === 'high' ? 3 :
+        impact.toLowerCase() === 'medium' ? 2 :
+        impact.toLowerCase() === 'low' ? 1 : 0;
+
+      if (!time || !title) return null;
+      const id = hashStringToId(`${countryCode}|${title}|${time}`);
+
+      return {
+        id,
+        datetime: time,
+        currency,
+        country: countryCode,
+        importance,
+        title,
+        actual: toDisplayNumberString(e.actual),
+        forecast: toDisplayNumberString(e.estimate),
+        previous: toDisplayNumberString(e.prev),
+        url: '',
+      } satisfies InvestingCalendarEvent;
+    })
+    .filter(Boolean) as InvestingCalendarEvent[];
+
+  return {
+    dateFrom: typeof data.dateFrom === 'string' ? data.dateFrom : dateFrom,
+    dateTo: typeof data.dateTo === 'string' ? data.dateTo : dateTo,
+    events: mapped,
+    source: typeof data.source === 'string' ? data.source : 'finnhub_calendar',
+  };
+}
+
+export async function fetchFxStreetCalendarRange(opts: {
+  dateFrom: string; // YYYY-MM-DD
+  dateTo: string; // YYYY-MM-DD
+  culture?: string; // default 'en'
+  apiVersion?: 'v1' | 'v2';
+  countries?: string; // CSV: "US,EMU,UK,..."
+}): Promise<{ dateFrom: string; dateTo: string; events: InvestingCalendarEvent[]; source: string }> {
+  const dateFrom = opts.dateFrom.trim();
+  const dateTo = opts.dateTo.trim();
+  const culture = (opts.culture ?? 'en').trim();
+  const apiVersion = (opts.apiVersion ?? 'v1').trim();
+  const countries = (opts.countries ?? 'US,EMU,UK,JP,CH,CA,AU,NZ,CN,HK').trim();
+  const url =
+    `${PROXY_URL}?action=fxstreet_calendar` +
+    `&dateFrom=${encodeURIComponent(dateFrom)}` +
+    `&dateTo=${encodeURIComponent(dateTo)}` +
+    `&culture=${encodeURIComponent(culture)}` +
+    `&apiVersion=${encodeURIComponent(apiVersion)}` +
+    `&countries=${encodeURIComponent(countries)}`;
+
+  const data = await fetchJsonWithRetry(url, { timeoutMs: 20000, retries: 1, minRetryDelayMs: 1200 });
+  if (!isRecord(data)) throw new Error('Invalid FXStreet calendar response');
+  const raw = Array.isArray(data.events) ? (data.events as unknown[]) : [];
+
+  const mapped: InvestingCalendarEvent[] = raw
+    .map((e) => {
+      if (!isRecord(e)) return null;
+      const guid = typeof e.IdEventDate === 'string' ? e.IdEventDate : typeof e.idEventDate === 'string' ? e.idEventDate : typeof e.eventDateId === 'string' ? e.eventDateId : '';
+      const datetime =
+        typeof e.DateUtc === 'string' ? e.DateUtc :
+        typeof e.dateUtc === 'string' ? e.dateUtc :
+        typeof e.time === 'string' ? e.time :
+        typeof e.date === 'string' ? e.date : '';
+
+      const countryCode = typeof e.CountryCode === 'string' ? e.CountryCode : typeof e.countryCode === 'string' ? e.countryCode : '';
+      const countryName = typeof e.CountryName === 'string' ? e.CountryName : typeof e.countryName === 'string' ? e.countryName : '';
+      const currency = (typeof e.CurrencyId === 'string' ? e.CurrencyId : typeof e.currencyId === 'string' ? e.currencyId : '').trim().toUpperCase() ||
+        inferCurrencyFromCountryCode(countryCode);
+
+      const volatility = typeof e.Volatility === 'number' ? e.Volatility : Number((e as any).volatility);
+      const importance = Number.isFinite(volatility) ? volatility : 0;
+
+      const title =
+        typeof e.EventName === 'string' ? e.EventName :
+        typeof e.Name === 'string' ? e.Name :
+        typeof e.Event === 'string' ? e.Event :
+        typeof e.Title === 'string' ? e.Title :
+        typeof (e as any).eventName === 'string' ? (e as any).eventName :
+        '';
+
+      const actual = toDisplayNumberString((e as any).Actual ?? (e as any).actual);
+      const forecast = toDisplayNumberString((e as any).Consensus ?? (e as any).consensus ?? (e as any).Forecast ?? (e as any).forecast);
+      const previous = toDisplayNumberString((e as any).Previous ?? (e as any).previous);
+
+      const urlSource = typeof e.UrlSource === 'string' ? e.UrlSource : typeof e.SourceUrl === 'string' ? e.SourceUrl : '';
+      const id = guid ? hashStringToId(guid) : hashStringToId(`${countryCode}|${title}|${datetime}`);
+
+      if (!datetime || !title) return null;
+      return {
+        id,
+        datetime,
+        currency,
+        country: countryName || countryCode,
+        importance,
+        title,
+        actual,
+        forecast,
+        previous,
+        url: urlSource,
+      } satisfies InvestingCalendarEvent;
+    })
+    .filter(Boolean) as InvestingCalendarEvent[];
+
+  return {
+    dateFrom: typeof data.dateFrom === 'string' ? data.dateFrom : dateFrom,
+    dateTo: typeof data.dateTo === 'string' ? data.dateTo : dateTo,
+    events: mapped,
+    source: typeof data.source === 'string' ? data.source : 'fxstreet_api',
+  };
+}
+
+export async function fetchMacroCalendarRange(opts: {
+  dateFrom: string;
+  dateTo: string;
+}): Promise<{ dateFrom: string; dateTo: string; events: InvestingCalendarEvent[]; source: string }> {
+  const { dateFrom, dateTo } = opts;
+
+  // Free/no-key mode: use ForexFactory "this week" feed (no actual; partial scoring).
+  // We keep a local static file as an optional fallback for offline/dev.
+  const errors: string[] = [];
+  try {
+    const url = `/proxy.php?action=forexfactory_thisweek&format=json`;
+    const r = await fetch(url, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = (await r.json()) as unknown;
+    if (!isRecord(data) || !Array.isArray((data as any).events)) throw new Error('Invalid forexfactory_thisweek payload');
+    const raw = (data as any).events as any[];
+
+    const mapped: InvestingCalendarEvent[] = raw
+      .map((e) => {
+        if (!isRecord(e)) return null;
+        const title = typeof e.title === 'string' ? e.title : '';
+        const country = typeof e.country === 'string' ? e.country : '';
+        const impact = typeof e.impact === 'string' ? e.impact : '';
+        const dt = typeof e.date === 'string' ? e.date : '';
+        if (!title || !country || !dt) return null;
+
+        // FF feed uses `country` as currency code (USD/EUR/JPY...), keep consistent.
+        const currency = country.toUpperCase();
+        const impactLc = impact.toLowerCase();
+        const importance = impactLc === 'high' ? 3 : impactLc === 'medium' ? 2 : impactLc === 'low' ? 1 : 0;
+
+        // `actual` is typically missing from the free feed; keep empty string.
+        const actual = typeof (e as any).actual === 'string' ? (e as any).actual : '';
+        const forecast = typeof e.forecast === 'string' ? e.forecast : '';
+        const previous = typeof e.previous === 'string' ? e.previous : '';
+        const datetime = new Date(dt).toISOString();
+        const id = hashStringToId(`${currency}|${title}|${datetime}`);
+
+        return {
+          id,
+          datetime,
+          currency,
+          country: currency,
+          importance,
+          title,
+          actual,
+          forecast,
+          previous,
+          url: '',
+        } satisfies InvestingCalendarEvent;
+      })
+      .filter(Boolean) as InvestingCalendarEvent[];
+
+    // Filter to requested range (still useful when caller asks 180D; we just return what we have).
+    const fromTs = Date.parse(`${dateFrom}T00:00:00Z`);
+    const toTs = Date.parse(`${dateTo}T23:59:59Z`);
+    const filtered = mapped.filter((e) => {
+      const t = Date.parse(e.datetime);
+      return Number.isFinite(t) && t >= fromTs && t <= toTs;
+    });
+
+    return { dateFrom, dateTo, events: filtered, source: 'forexfactory_thisweek' };
+  } catch (e: unknown) {
+    errors.push(`forexfactory_thisweek: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // Fallback: local static dataset if present.
+  try {
+    const resp = await fetch(`/data/macro_calendar.v1.json`, { cache: 'no-store' });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = (await resp.json()) as unknown;
+    if (!isRecord(data) || !Array.isArray((data as any).events)) throw new Error('Invalid local macro calendar dataset format.');
+    const events = (data as any).events as InvestingCalendarEvent[];
+    const fromTs = Date.parse(`${dateFrom}T00:00:00Z`);
+    const toTs = Date.parse(`${dateTo}T23:59:59Z`);
+    const filtered = events.filter((e) => {
+      const t = Date.parse(e.datetime);
+      return Number.isFinite(t) && t >= fromTs && t <= toTs;
+    });
+    return { dateFrom, dateTo, events: filtered, source: 'local_static' };
+  } catch (e: unknown) {
+    errors.push(`local_static: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  throw new Error(`No calendar source available (no-key mode). (${errors.join(' | ')})`);
 }
 
 export async function fetchMacroTrendSnapshot(): Promise<MacroTrendSnapshot> {
