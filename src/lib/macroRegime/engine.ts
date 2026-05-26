@@ -114,6 +114,8 @@ function biasFromScore(score: number): MacroBias {
   // so the matrix doesn't stay Neutral for most assets.
   if (score >= 1.2) return 'BUY';
   if (score <= -1.2) return 'SELL';
+  if (score >= 0.6) return 'READY_BUY';
+  if (score <= -0.6) return 'READY_SELL';
   return 'NEUTRAL';
 }
 
@@ -198,7 +200,16 @@ function computeConfidence(score: number, eventCount: number, confirmDelta: numb
 }
 
 function assetHeadline(assetId: string, bias: MacroBias, regime: MacroRegimeLabel, tf: MacroTimeframe) {
-  const b = bias === 'BUY' ? 'Mua' : bias === 'SELL' ? 'Bán' : 'Trung lập';
+  const b =
+    bias === 'BUY'
+      ? 'Mua'
+      : bias === 'SELL'
+        ? 'Bán'
+        : bias === 'READY_BUY'
+          ? 'Sắp mua'
+          : bias === 'READY_SELL'
+            ? 'Sắp bán'
+            : 'Trung lập';
   return `${assetId}: ${b} (${tf}) · ${regime}`;
 }
 
@@ -458,8 +469,8 @@ export function computeConflict(cells: MacroCellComputed[], assetId: string): bo
   if (!a7 || !a30 || !a180) return false;
 
   const biases = [a7.bias, a30.bias, a180.bias];
-  const hasBuy = biases.includes('BUY');
-  const hasSell = biases.includes('SELL');
+  const hasBuy = biases.includes('BUY') || biases.includes('READY_BUY');
+  const hasSell = biases.includes('SELL') || biases.includes('READY_SELL');
   if (hasBuy && hasSell) return true; // (A)
 
   if (a7.regime === 'Mixed/Transition' || a30.regime === 'Mixed/Transition' || a180.regime === 'Mixed/Transition') return true; // (B)

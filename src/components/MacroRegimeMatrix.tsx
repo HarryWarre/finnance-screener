@@ -24,6 +24,8 @@ function addDaysUtc(ms: number, days: number) {
 function biasTone(bias: string) {
   if (bias === 'BUY') return styles.badgeBuy;
   if (bias === 'SELL') return styles.badgeSell;
+  if (bias === 'READY_BUY') return styles.badgeWarn;
+  if (bias === 'READY_SELL') return styles.badgeWarn;
   return styles.badgeNeutral;
 }
 
@@ -36,6 +38,8 @@ function qualityTone(q: string) {
 function viBias(bias: string) {
   if (bias === 'BUY') return 'MUA';
   if (bias === 'SELL') return 'BÁN';
+  if (bias === 'READY_BUY') return 'SẮP MUA';
+  if (bias === 'READY_SELL') return 'SẮP BÁN';
   return 'TRUNG LẬP';
 }
 
@@ -95,7 +99,7 @@ export default function MacroRegimeMatrix({ isActive }: { isActive: boolean }) {
   const [assetClass, setAssetClass] = useState<MacroAssetClass | 'ALL'>('ALL');
   const [q, setQ] = useState('');
   const [biasFilterTf, setBiasFilterTf] = useState<SortTf>('30D');
-  const [biasFilter, setBiasFilter] = useState<'ALL' | 'BUY' | 'SELL' | 'NEUTRAL'>('ALL');
+  const [biasFilter, setBiasFilter] = useState<'ALL' | 'BUY' | 'SELL' | 'READY_BUY' | 'READY_SELL' | 'NEUTRAL'>('ALL');
   const [sortTf, setSortTf] = useState<SortTf>('30D');
   const [conflictOnly, setConflictOnly] = useState(false);
 
@@ -303,7 +307,9 @@ export default function MacroRegimeMatrix({ isActive }: { isActive: boolean }) {
           <select className={styles.strategyInput} value={biasFilter} onChange={(e) => setBiasFilter(e.target.value as typeof biasFilter)}>
             <option value="ALL">Bias: All</option>
             <option value="BUY">Bias: Buy</option>
+            <option value="READY_BUY">Bias: Ready Buy</option>
             <option value="SELL">Bias: Sell</option>
+            <option value="READY_SELL">Bias: Ready Sell</option>
             <option value="NEUTRAL">Bias: Neutral</option>
           </select>
 

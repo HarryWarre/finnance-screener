@@ -1,5 +1,5 @@
 export type MacroTimeframe = '7D' | '30D' | '180D';
-export type MacroBias = 'BUY' | 'SELL' | 'NEUTRAL';
+export type MacroBias = 'BUY' | 'SELL' | 'READY_BUY' | 'READY_SELL' | 'NEUTRAL';
 export type MacroRegimeLabel =
   | 'Risk-on'
   | 'Risk-off'
