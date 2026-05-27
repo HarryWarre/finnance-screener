@@ -1,3 +1,5 @@
+import { toAppUrl } from './appUrl';
+
 export interface OHLCV {
   timestamp: number[];
   open?: number[];
@@ -455,12 +457,7 @@ export async function fetchChartData(
   interval: YahooInterval = '1d',
   range: YahooRange = DEFAULT_RANGE_BY_INTERVAL[interval]
 ): Promise<OHLCV | null> {
-  try {
-    const data = await fetchJsonWithTimeout(
-      `${PROXY_URL}?action=chart&symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&range=${encodeURIComponent(range)}`,
-      8000
-    );
-
+  const parseYahooChart = (data: unknown): OHLCV | null => {
     if (!isRecord(data)) return null;
     const chart = data.chart;
     if (!isRecord(chart)) return null;
@@ -474,65 +471,61 @@ export async function fetchChartData(
       isRecord(indicators.quote[0])
         ? (indicators.quote[0] as Record<string, unknown>)
         : null;
-    const closePrices =
-      quote0 && Array.isArray(quote0.close)
-        ? (quote0.close as unknown[])
-        : [];
-    const openPrices =
-      quote0 && Array.isArray(quote0.open)
-        ? (quote0.open as unknown[])
-        : [];
-    const highPrices =
-      quote0 && Array.isArray(quote0.high)
-        ? (quote0.high as unknown[])
-        : [];
-    const lowPrices =
-      quote0 && Array.isArray(quote0.low)
-        ? (quote0.low as unknown[])
-        : [];
-      
-      // Filter out nulls
-      const validTimestamps: number[] = [];
-      const validOpens: number[] = [];
-      const validHighs: number[] = [];
-      const validLows: number[] = [];
-      const validCloses: number[] = [];
-      
+    const closePrices = quote0 && Array.isArray(quote0.close) ? (quote0.close as unknown[]) : [];
+    const openPrices = quote0 && Array.isArray(quote0.open) ? (quote0.open as unknown[]) : [];
+    const highPrices = quote0 && Array.isArray(quote0.high) ? (quote0.high as unknown[]) : [];
+    const lowPrices = quote0 && Array.isArray(quote0.low) ? (quote0.low as unknown[]) : [];
+
+    const validTimestamps: number[] = [];
+    const validOpens: number[] = [];
+    const validHighs: number[] = [];
+    const validLows: number[] = [];
+    const validCloses: number[] = [];
+
     for (let i = 0; i < closePrices.length; i++) {
       const c = closePrices[i];
       const ts = timestamps[i];
       const o = openPrices[i];
       const h = highPrices[i];
       const l = lowPrices[i];
-      if (
-        typeof c === 'number' &&
-        typeof ts === 'number' &&
-        typeof o === 'number' &&
-        typeof h === 'number' &&
-        typeof l === 'number'
-      ) {
+      if (typeof c === 'number' && typeof ts === 'number' && typeof o === 'number' && typeof h === 'number' && typeof l === 'number') {
         validTimestamps.push(ts);
         validOpens.push(o);
         validHighs.push(h);
         validLows.push(l);
         validCloses.push(c);
-        }
       }
-      
-    if (validCloses.length < 2) return null;
-    return {
-      timestamp: validTimestamps,
-      open: validOpens,
-      high: validHighs,
-      low: validLows,
-      close: validCloses,
-    };
-  } catch {
-    console.warn(`⚠️ Could not fetch chart data for ${symbol} (Might not exist on Yahoo)`);
-    return null;
-  }
-}
+    }
 
+    if (validCloses.length < 2) return null;
+    return { timestamp: validTimestamps, open: validOpens, high: validHighs, low: validLows, close: validCloses };
+  };
+
+  try {
+    const data = await fetchJsonWithTimeout(
+      `${PROXY_URL}?action=chart&symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&range=${encodeURIComponent(range)}`,
+      8000
+    );
+    const parsed = parseYahooChart(data);
+    if (parsed) return parsed;
+  } catch {
+    // proxy unavailable on some hosts; continue with direct fallback
+  }
+
+  try {
+    const data = await fetchJsonWithRetry(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${encodeURIComponent(interval)}&range=${encodeURIComponent(range)}`,
+      { timeoutMs: 10000, retries: 1, minRetryDelayMs: 900 }
+    );
+    const parsed = parseYahooChart(data);
+    if (parsed) return parsed;
+  } catch {
+    // ignore
+  }
+
+  console.warn(`Could not fetch chart data for ${symbol} (proxy/direct Yahoo failed)`);
+  return null;
+}
 export async function fetchSp500Symbols(opts?: { sector?: string; limit?: number }): Promise<string[]> {
   try {
     const res = await fetch(`${PROXY_URL}?action=sp500`);
@@ -1490,13 +1483,36 @@ export async function fetchMacroCalendarRange(opts: {
 }): Promise<{ dateFrom: string; dateTo: string; events: InvestingCalendarEvent[]; source: string }> {
   const { dateFrom, dateTo } = opts;
 
-  // Free/no-key mode: use ForexFactory "this week" feed (no actual; partial scoring).
-  // We keep a local static file as an optional fallback for offline/dev.
+  // Free/no-key mode: evaluate both free sources and pick/merge by data quality.
+  // This keeps behavior stable between localhost and hosting (where FF feed may be sparse/no-actual).
   const errors: string[] = [];
+  const fromTs = Date.parse(`${dateFrom}T00:00:00Z`);
+  const toTs = Date.parse(`${dateTo}T23:59:59Z`);
+
+  const inRange = (dt: string) => {
+    const t = Date.parse(dt);
+    return Number.isFinite(t) && t >= fromTs && t <= toTs;
+  };
+
+  const hasSignalFields = (e: InvestingCalendarEvent) =>
+    Boolean((e.actual || '').trim()) || Boolean((e.forecast || '').trim()) || Boolean((e.previous || '').trim());
+
+  const scoreSource = (events: InvestingCalendarEvent[]) => {
+    let score = events.length;
+    for (const e of events) {
+      if (hasSignalFields(e)) score += 3;
+      if (e.importance >= 2) score += 1;
+    }
+    return score;
+  };
+
+  let ffEvents: InvestingCalendarEvent[] | null = null;
+  let staticEvents: InvestingCalendarEvent[] | null = null;
+
   try {
-    const url = `/proxy.php?action=forexfactory_thisweek&format=json`;
+    const url = toAppUrl(`proxy.php?action=forexfactory_thisweek&format=json`);
     const r = await fetch(url, { cache: 'no-store' });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status} @ ${url}`);
     const data = (await r.json()) as unknown;
     if (!isRecord(data) || !Array.isArray((data as any).events)) throw new Error('Invalid forexfactory_thisweek payload');
     const raw = (data as any).events as any[];
@@ -1537,36 +1553,54 @@ export async function fetchMacroCalendarRange(opts: {
       })
       .filter(Boolean) as InvestingCalendarEvent[];
 
-    // Filter to requested range (still useful when caller asks 180D; we just return what we have).
-    const fromTs = Date.parse(`${dateFrom}T00:00:00Z`);
-    const toTs = Date.parse(`${dateTo}T23:59:59Z`);
-    const filtered = mapped.filter((e) => {
-      const t = Date.parse(e.datetime);
-      return Number.isFinite(t) && t >= fromTs && t <= toTs;
-    });
-
-    return { dateFrom, dateTo, events: filtered, source: 'forexfactory_thisweek' };
+    ffEvents = mapped.filter((e) => inRange(e.datetime));
   } catch (e: unknown) {
     errors.push(`forexfactory_thisweek: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // Fallback: local static dataset if present.
+  // Local static dataset: usually richer (has actual/forecast), stable across environments.
   try {
-    const resp = await fetch(`/data/macro_calendar.v1.json`, { cache: 'no-store' });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const url = toAppUrl('data/macro_calendar.v1.json');
+    const resp = await fetch(url, { cache: 'no-store' });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} @ ${url}`);
     const data = (await resp.json()) as unknown;
     if (!isRecord(data) || !Array.isArray((data as any).events)) throw new Error('Invalid local macro calendar dataset format.');
     const events = (data as any).events as InvestingCalendarEvent[];
-    const fromTs = Date.parse(`${dateFrom}T00:00:00Z`);
-    const toTs = Date.parse(`${dateTo}T23:59:59Z`);
-    const filtered = events.filter((e) => {
-      const t = Date.parse(e.datetime);
-      return Number.isFinite(t) && t >= fromTs && t <= toTs;
-    });
-    return { dateFrom, dateTo, events: filtered, source: 'local_static' };
+    staticEvents = events.filter((e) => inRange(e.datetime));
   } catch (e: unknown) {
     errors.push(`local_static: ${e instanceof Error ? e.message : String(e)}`);
   }
+
+  if (ffEvents && staticEvents) {
+    const ffScore = scoreSource(ffEvents);
+    const stScore = scoreSource(staticEvents);
+
+    // Merge for coverage; prefer the richer event record when duplicated.
+    const merged = new Map<string, InvestingCalendarEvent>();
+    for (const e of ffEvents) {
+      const k = `${e.currency}::${e.datetime}::${e.title}`;
+      merged.set(k, e);
+    }
+    for (const e of staticEvents) {
+      const k = `${e.currency}::${e.datetime}::${e.title}`;
+      const prev = merged.get(k);
+      if (!prev) {
+        merged.set(k, e);
+        continue;
+      }
+      const prevScore = Number(hasSignalFields(prev)) + (prev.importance >= 2 ? 1 : 0);
+      const nextScore = Number(hasSignalFields(e)) + (e.importance >= 2 ? 1 : 0);
+      merged.set(k, nextScore >= prevScore ? { ...prev, ...e } : prev);
+    }
+    return {
+      dateFrom,
+      dateTo,
+      events: Array.from(merged.values()),
+      source: stScore >= ffScore ? 'local_static+forexfactory_thisweek' : 'forexfactory_thisweek+local_static',
+    };
+  }
+  if (staticEvents) return { dateFrom, dateTo, events: staticEvents, source: 'local_static' };
+  if (ffEvents) return { dateFrom, dateTo, events: ffEvents, source: 'forexfactory_thisweek' };
 
   throw new Error(`No calendar source available (no-key mode). (${errors.join(' | ')})`);
 }

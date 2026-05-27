@@ -1,6 +1,7 @@
 import type { MacroThresholdArtifactV1 } from './types';
+import { toAppUrl } from '../appUrl';
 
-const THRESHOLD_URL = '/data/macro_thresholds.v1.json';
+const THRESHOLD_URL = toAppUrl('data/macro_thresholds.v1.json');
 
 let memo: Promise<MacroThresholdArtifactV1> | null = null;
 
