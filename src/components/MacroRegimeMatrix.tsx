@@ -11,6 +11,8 @@ import { loadMacroThresholdArtifact } from '../lib/macroRegime/thresholds';
 type SortTf = MacroTimeframe;
 
 const TF_LIST: MacroTimeframe[] = ['7D', '30D', '180D'];
+const BIAS_LIST = ['BUY', 'READY_BUY', 'SELL', 'READY_SELL', 'NEUTRAL'] as const;
+type BiasFilter = (typeof BIAS_LIST)[number];
 
 function isoDateUtc(ms: number) {
   const d = new Date(ms);
@@ -98,8 +100,8 @@ export default function MacroRegimeMatrix({ isActive }: { isActive: boolean }) {
 
   const [assetClass, setAssetClass] = useState<MacroAssetClass | 'ALL'>('ALL');
   const [q, setQ] = useState('');
-  const [biasFilterTf, setBiasFilterTf] = useState<SortTf>('30D');
-  const [biasFilter, setBiasFilter] = useState<'ALL' | 'BUY' | 'SELL' | 'READY_BUY' | 'READY_SELL' | 'NEUTRAL'>('ALL');
+  const [biasFilterTfs, setBiasFilterTfs] = useState<SortTf[]>(['30D']);
+  const [biasFilters, setBiasFilters] = useState<BiasFilter[]>([...BIAS_LIST]);
   const [sortTf, setSortTf] = useState<SortTf>('30D');
   const [conflictOnly, setConflictOnly] = useState(false);
 
@@ -243,9 +245,14 @@ export default function MacroRegimeMatrix({ isActive }: { isActive: boolean }) {
     if (query) {
       rows = rows.filter((a) => a.assetId.toLowerCase().includes(query) || a.displayName.toLowerCase().includes(query));
     }
-    if (biasFilter !== 'ALL') {
-      rows = rows.filter((a) => byKey.get(cellKey(a.assetId, biasFilterTf))?.bias === biasFilter);
-    }
+    if (biasFilterTfs.length === 0 || biasFilters.length === 0) return [];
+    rows = rows.filter((a) => {
+      for (const tf of biasFilterTfs) {
+        const c = byKey.get(cellKey(a.assetId, tf));
+        if (c && biasFilters.includes(c.bias as BiasFilter)) return true;
+      }
+      return false;
+    });
     if (conflictOnly) {
       rows = rows.filter((a) => computeConflict(cells, a.assetId));
     }
@@ -259,7 +266,7 @@ export default function MacroRegimeMatrix({ isActive }: { isActive: boolean }) {
     });
 
     return rows;
-  }, [assets, assetClass, q, biasFilter, biasFilterTf, conflictOnly, sortTf, byKey, cells]);
+  }, [assets, assetClass, q, biasFilters, biasFilterTfs, conflictOnly, sortTf, byKey, cells]);
 
   if (!isActive) return null;
 
@@ -298,20 +305,45 @@ export default function MacroRegimeMatrix({ isActive }: { isActive: boolean }) {
             <option value="Index">{marketClassLabel('Index')}</option>
           </select>
 
-          <select className={styles.strategyInput} value={biasFilterTf} onChange={(e) => setBiasFilterTf(e.target.value as SortTf)}>
-            <option value="7D">Bias filter timeframe: 7D</option>
-            <option value="30D">Bias filter timeframe: 30D</option>
-            <option value="180D">Bias filter timeframe: 180D</option>
-          </select>
+          <div className={styles.strategyInput} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ opacity: 0.8, fontWeight: 700 }}>TF</span>
+            {TF_LIST.map((tf) => (
+              <label key={tf} style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={biasFilterTfs.includes(tf)}
+                  onChange={() =>
+                    setBiasFilterTfs((prev) => {
+                      const next = prev.includes(tf) ? prev.filter((x) => x !== tf) : [...prev, tf];
+                      return TF_LIST.filter((x) => next.includes(x));
+                    })
+                  }
+                />
+                <span>{tf}</span>
+              </label>
+            ))}
+          </div>
 
-          <select className={styles.strategyInput} value={biasFilter} onChange={(e) => setBiasFilter(e.target.value as typeof biasFilter)}>
-            <option value="ALL">Bias: All</option>
-            <option value="BUY">Bias: Buy</option>
-            <option value="READY_BUY">Bias: Ready Buy</option>
-            <option value="SELL">Bias: Sell</option>
-            <option value="READY_SELL">Bias: Ready Sell</option>
-            <option value="NEUTRAL">Bias: Neutral</option>
-          </select>
+          <div className={styles.strategyInput} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ opacity: 0.8, fontWeight: 700 }}>Bias</span>
+            {BIAS_LIST.map((b) => (
+              <label key={b} style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={biasFilters.includes(b)}
+                  onChange={() =>
+                    setBiasFilters((prev) => {
+                      const next = prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b];
+                      return BIAS_LIST.filter((x) => next.includes(x));
+                    })
+                  }
+                />
+                <span className={clsx(styles.badge, biasTone(b))} style={{ lineHeight: 1.1 }}>
+                  {b}
+                </span>
+              </label>
+            ))}
+          </div>
 
           <select className={styles.strategyInput} value={sortTf} onChange={(e) => setSortTf(e.target.value as SortTf)}>
             <option value="7D">Sort by Confidence: 7D</option>
